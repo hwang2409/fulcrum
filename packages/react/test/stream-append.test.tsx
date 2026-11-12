@@ -62,18 +62,20 @@ function spyStrings(min: number, arrayMin = 256) {
     const original = proto[name]!;
     const kind = (COMPARES as readonly string[]).includes(name) ? "compare" : "read";
     const spy = function (this: string, ...args: unknown[]) {
-      if (this.length >= min) {
-        const caller = new Error().stack!.split("\n")[2]!.trim();
+      if (counting && this.length >= min) {
+        counting = false;
+        const frames = new Error().stack!.split("\n").slice(2).map((frame) => frame.trim());
+        const caller = frames.find((frame) => !frame.includes("stream-append.test.tsx")) ?? frames[0]!;
         // React's development build reads changed props to log renders; the production build does not.
-        if (!caller.includes("react-dom-client.development")) {
+        if (!caller.includes("react-dom-client.development") && !caller.includes("happy-dom")) {
           const site = `${kind} ${name} in ${caller.replace(/^at /, "").replace(/ \(.*\/(src|test)\//, " (").replace(/(:\d+)+\)$/, ")")}`;
           sites[site] = (sites[site] ?? 0) + 1;
           chars += this.length;
         }
+        counting = true;
       }
       return original.apply(this, args);
     };
-    Object.defineProperty(spy, "name", { value: "" });
     restoreSpies.push(shimProperty(proto, name, { configurable: true, writable: true, value: spy }));
   }
   // Arrays too: a step that copies or visits an array of every segment or row (the segment index, the virtual list's
@@ -98,7 +100,6 @@ function spyStrings(min: number, arrayMin = 256) {
       }
       return original.apply(this, args);
     };
-    Object.defineProperty(spy, "name", { value: "" });
     restoreSpies.push(shimProperty(arrayProto, name, { configurable: true, writable: true, value: spy }));
   }
   return {

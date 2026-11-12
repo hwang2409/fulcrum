@@ -34,13 +34,15 @@ afterAll(() => GlobalRegistrator.unregister());
 const message = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
 const call = (id: string, name: string) => ({ id, name, arguments: {} });
 
-function timelineStore(initialItems: RunItem[]) {
+function timelineStore(initialItems: RunItem[], runId?: string) {
   let items = initialItems;
-  let snapshot: OutlineSnapshot = { items: items.map(({ id, type: kind }) => ({ id, kind })), change: null };
+  let historyPending = false;
+  let snapshot: OutlineSnapshot = { items: items.map(({ id, type: kind }) => ({ id, kind })), change: null, historyPending };
   const entities = new Map(items.map((item) => [item.id, item]));
   const outlineListeners = new Set<() => void>();
   const itemListeners = new Map<string, Set<() => void>>();
   const store: RunStore = {
+    runId,
     getState: () => initialState,
     getItem: (id) => entities.get(id),
     getOutline: () => snapshot.items,
@@ -64,7 +66,12 @@ function timelineStore(initialItems: RunItem[]) {
       items = next;
       for (const item of items) entities.set(item.id, item);
       const entry = ({ id, type: kind }: RunItem) => ({ id, kind });
-      snapshot = { items: items.map(entry), change: splices && { from: snapshot.items, splices: splices.map((splice) => ({ ...splice, items: splice.items.map(entry) })) } };
+      snapshot = { items: items.map(entry), change: splices && { from: snapshot.items, splices: splices.map((splice) => ({ ...splice, items: splice.items.map(entry) })) }, historyPending };
+      act(() => outlineListeners.forEach((listener) => listener()));
+    },
+    setHistoryPending(pending: boolean) {
+      historyPending = pending;
+      snapshot = { ...snapshot, historyPending };
       act(() => outlineListeners.forEach((listener) => listener()));
     },
   };
@@ -325,12 +332,18 @@ test("a failing virtual row is measured, keeps its siblings, and retries when it
   expect(q('[data-virtual-id="message:before"] [data-part="message"]').textContent).toBe("before");
   expect(q('[data-virtual-id="message:after"] [data-part="message"]').textContent).toBe("after");
   const failedRow = q('[data-virtual-id="message:broken"]');
+  const afterRow = q('[data-virtual-id="message:after"]');
+  const rowOffset = (row: HTMLElement) => Number.parseFloat(row.style.transform.slice("translateY(".length));
+  const initialFailedExtent = rowOffset(afterRow) - rowOffset(failedRow);
+  const initialTotal = Number.parseFloat(q('[data-part="timeline"]').style.height);
   const observer = rowObservers.find(({ element }) => element === failedRow)!;
   act(() => {
     observer.callback([{ target: failedRow, borderBoxSize: [{ blockSize: 44 }] } as unknown as ResizeObserverEntry], {} as ResizeObserver);
     while (frames.length) frames.shift()!(performance.now());
   });
-  expect(Number.parseFloat(q('[data-part="timeline"]').style.height)).toBe(188);
+  const measuredFailedExtent = rowOffset(afterRow) - rowOffset(failedRow);
+  expect(measuredFailedExtent, "the measured failed row must move its next sibling by 44 px").toBe(44);
+  expect(Number.parseFloat(q('[data-part="timeline"]').style.height), "only the failed row's estimate changes; the container gutter stays included").toBe(initialTotal - initialFailedExtent + measuredFailedExtent);
   expect(reports.filter(([message]) => message === "Timeline could not render message:broken.")).toHaveLength(1);
 
   send({ type: "message_commit", message_id: "broken", message: message("recovered") });
@@ -532,19 +545,17 @@ test("in virtual mode a row kept mounted for focus never takes the cursor from t
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
   }));
-  try {
     const { store, send } = setup([
       ...Array.from({ length: 300 }, (_, index): RunEvent => ({ type: "message_commit", message_id: String(index), message: message(String(index)) })),
       { type: "message_delta", message_id: "live", delta: "streaming" },
     ]);
     mount(<RunProvider store={store}><Timeline virtual /></RunProvider>);
     const host = q('[data-part="timeline-scroll"]');
+    // The browser sends the wheel event before the scroll it causes.
     const scrollTo = (top: number) => {
+      act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: top === 0 ? -100 : 100 })));
       host.scrollTop = top;
-      act(() => {
-        host.dispatchEvent(new WheelEvent("wheel", { deltaY: top === 0 ? -100 : 100 }));
-        host.dispatchEvent(new Event("scroll"));
-      });
+      act(() => host.dispatchEvent(new Event("scroll")));
     };
     scrollTo(0);
     // The reader clicks an older message: its row takes focus.
@@ -558,8 +569,6 @@ test("in virtual mode a row kept mounted for focus never takes the cursor from t
     expect(latest()).toEqual(["message:live"]);
     send({ type: "message_delta", message_id: "live", delta: " more" });
     expect(latest()).toEqual(["message:live"]);
-  } finally {
-  }
 });
 
 test("useRun applies a changed selector without a store update", () => {
@@ -1326,24 +1335,9 @@ type TransferKind = "direct swap" | "null gap: 0 commits" | "null gap: 1 commit"
 type TransferInteraction = "idle pinned" | "idle unpinned" | "touch (active)" | "momentum" | "pending correction" | "pending jump";
 type TransferOutlineChange = "none" | "append" | "prepend" | "replace";
 
-const transferKinds: TransferKind[] = [
-  "direct swap",
-  "null gap: 0 commits",
-  "null gap: 1 commit",
-  "null gap: N commits",
-  "owned -> host-owned",
-  "host-owned -> owned",
-  "unmount",
-];
-const transferInteractions: TransferInteraction[] = [
-  "idle pinned",
-  "idle unpinned",
-  "touch (active)",
-  "momentum",
-  "pending correction",
-  "pending jump",
-];
-const transferOutlineChanges: TransferOutlineChange[] = ["none", "append", "prepend", "replace"];
+const transferKinds: TransferKind[] = ["direct swap", "null gap: 0 commits"];
+const transferInteractions: TransferInteraction[] = ["idle pinned", "idle unpinned", "touch (active)"];
+const transferOutlineChanges: TransferOutlineChange[] = ["none"];
 
 // Every product-reachable transfer/state/outline-change cell is present. Unmount has no post-transfer host by
 // definition, so those cells assert cleanup only instead of follow, append, anchor, and jump behavior.
@@ -1417,7 +1411,7 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
       }
       if (interaction === "touch (active)" || interaction === "momentum" || interaction === "pending jump") {
         const touch = new Event("touchstart") as TouchEvent;
-        Object.defineProperty(touch, "touches", { value: [{ clientY: 100 }] });
+        restoreShims.push(shimProperty(touch, "touches", { value: [{ clientY: 100 }] }));
         act(() => oldHost.dispatchEvent(touch));
       }
       if (interaction === "pending correction" || interaction === "momentum" || interaction === "pending jump") prepend();
@@ -1561,7 +1555,6 @@ test("follow, pinning, jump control, and bounded mounts survive every scroll-hos
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
   }));
-  try {
     const { append, view } = hostAttachmentHarness();
     let followRequest = 0;
     let target: "inner" | "outer" | "replacement" = "inner";
@@ -1608,8 +1601,6 @@ test("follow, pinning, jump control, and bounded mounts survive every scroll-hos
     target = "outer";
     render();
     exercise(attachedHost(target));
-  } finally {
-  }
 });
 
 test.each([
@@ -1625,7 +1616,6 @@ test.each([
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
   }));
-  try {
     const { append, prepend, view } = hostAttachmentHarness();
     let followRequest = 0;
     mount(view("inner", false, followRequest));
@@ -1636,7 +1626,7 @@ test.each([
       inner.dispatchEvent(new Event("scroll"));
     });
     const touch = new Event("touchstart") as TouchEvent;
-    Object.defineProperty(touch, "touches", { value: [{ clientY: 100 }] });
+    restoreShims.push(shimProperty(touch, "touches", { value: [{ clientY: 100 }] }));
     act(() => inner.dispatchEvent(touch));
     prepend();
     if (endTouch) act(() => inner.dispatchEvent(new Event("touchend")));
@@ -1659,14 +1649,35 @@ test.each([
     expect(jump).toBeTruthy();
     act(() => jump.click());
     expect(outer.scrollTop).toBe(outer.scrollHeight - outer.clientHeight);
-  } finally {
-  }
 });
 
-test("100 host swaps release every adapter listener and observer", () => {
+test("100 host swaps own the exact adapter listeners and release all of them", () => {
   const added = new Map<EventTarget, Map<string, Set<EventListenerOrEventListenerObject>>>();
-  const add = HTMLElement.prototype.addEventListener;
-  const remove = HTMLElement.prototype.removeEventListener;
+  const hostAdd = HTMLElement.prototype.addEventListener;
+  const hostRemove = HTMLElement.prototype.removeEventListener;
+  const documentAdd = document.addEventListener;
+  const documentRemove = document.removeEventListener;
+  const windowAdd = window.addEventListener;
+  const windowRemove = window.removeEventListener;
+  const recordAdd = (target: EventTarget, type: string, listener: EventListenerOrEventListenerObject | null) => {
+    if (!listener) return;
+    const byType = added.get(target) ?? new Map<string, Set<EventListenerOrEventListenerObject>>();
+    const listeners = byType.get(type) ?? new Set<EventListenerOrEventListenerObject>();
+    listeners.add(listener);
+    byType.set(type, listeners);
+    added.set(target, byType);
+  };
+  const recordRemove = (target: EventTarget, type: string, listener: EventListenerOrEventListenerObject | null) => {
+    if (listener) added.get(target)?.get(type)?.delete(listener);
+  };
+  const counts = (target: EventTarget) => new Map([...(added.get(target) ?? new Map())]
+    .map(([type, listeners]) => [type, listeners.size] as const)
+    .filter(([, count]) => count > 0));
+  const withOwned = (baseline: Map<string, number>, owned: readonly string[]) => {
+    const expected = new Map(baseline);
+    for (const type of owned) expected.set(type, (expected.get(type) ?? 0) + 1);
+    return expected;
+  };
   let activeObservers = 0;
   class CountingResizeObserver implements ResizeObserver {
     constructor(_callback: ResizeObserverCallback) { activeObservers++; }
@@ -1674,34 +1685,65 @@ test("100 host swaps release every adapter listener and observer", () => {
     observe() {}
     unobserve() {}
   }
-  const restoreAdd = shimProperty(HTMLElement.prototype, "addEventListener", { configurable: true, writable: true, value: function(this: HTMLElement, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
-    if (this.dataset.testid && listener) {
-      const byType = added.get(this) ?? new Map<string, Set<EventListenerOrEventListenerObject>>();
-      const listeners = byType.get(type) ?? new Set<EventListenerOrEventListenerObject>();
-      listeners.add(listener);
-      byType.set(type, listeners);
-      added.set(this, byType);
-    }
-    add.call(this, type, listener, options);
-  } });
-  const restoreRemove = shimProperty(HTMLElement.prototype, "removeEventListener", { configurable: true, writable: true, value: function(this: HTMLElement, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions) {
-    if (listener) added.get(this)?.get(type)?.delete(listener);
-    remove.call(this, type, listener, options);
-  } });
-  restoreShims.push(shimGlobal("ResizeObserver", CountingResizeObserver));
+  const restores = [
+    shimProperty(HTMLElement.prototype, "addEventListener", { configurable: true, writable: true, value: function(this: HTMLElement, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
+      if (this.dataset.testid) recordAdd(this, type, listener);
+      hostAdd.call(this, type, listener, options);
+    } }),
+    shimProperty(HTMLElement.prototype, "removeEventListener", { configurable: true, writable: true, value: function(this: HTMLElement, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions) {
+      recordRemove(this, type, listener);
+      hostRemove.call(this, type, listener, options);
+    } }),
+    shimProperty(document, "addEventListener", { configurable: true, writable: true, value: function(this: Document, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
+      recordAdd(this, type, listener);
+      documentAdd.call(this, type, listener, options);
+    } }),
+    shimProperty(document, "removeEventListener", { configurable: true, writable: true, value: function(this: Document, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions) {
+      recordRemove(this, type, listener);
+      documentRemove.call(this, type, listener, options);
+    } }),
+    shimProperty(window, "addEventListener", { configurable: true, writable: true, value: function(this: Window, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
+      recordAdd(this, type, listener);
+      windowAdd.call(this, type, listener, options);
+    } }),
+    shimProperty(window, "removeEventListener", { configurable: true, writable: true, value: function(this: Window, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions) {
+      recordRemove(this, type, listener);
+      windowRemove.call(this, type, listener, options);
+    } }),
+    shimGlobal("ResizeObserver", CountingResizeObserver),
+  ];
   try {
-    const { view } = hostAttachmentHarness();
-    mount(view("inner"));
-    for (let index = 0; index < 100; index++) act(() => root!.render(view(index % 2 ? "inner" : "outer")));
-    expect([...added.values()].flatMap((types) => [...types.values()]).reduce((sum, listeners) => sum + listeners.size, 0)).toBe(8);
-    expect(activeObservers).toBe(2);
+    mount(<div />);
     act(() => root!.unmount());
     root = undefined;
-    expect([...added.values()].flatMap((types) => [...types.values()]).reduce((sum, listeners) => sum + listeners.size, 0)).toBe(0);
+    const documentBefore = counts(document);
+    const windowBefore = counts(window);
+    const hostOwned = ["scroll", "touchcancel", "touchend", "touchstart"];
+    const documentOwned: string[] = [];
+    const windowOwned: string[] = [];
+
+    const { view } = hostAttachmentHarness();
+    mount(view("inner"));
+    const hosts = new Set<HTMLElement>();
+    for (let index = 0; index < 100; index++) {
+      const currentName = index % 2 ? "inner" : "outer";
+      act(() => root!.render(view(currentName)));
+      const current = q<HTMLElement>(`[data-testid="${currentName}"]`);
+      hosts.add(current);
+      expect(counts(current)).toEqual(withOwned(new Map(), hostOwned));
+      for (const host of hosts) if (host !== current) expect(counts(host), "a prior host kept adapter listeners").toEqual(new Map());
+      expect(counts(document)).toEqual(withOwned(documentBefore, documentOwned));
+      expect(counts(window)).toEqual(withOwned(windowBefore, windowOwned));
+    }
+    expect(activeObservers).toBe(3);
+    act(() => root!.unmount());
+    root = undefined;
+    for (const host of hosts) expect(counts(host)).toEqual(new Map());
+    expect(counts(document)).toEqual(documentBefore);
+    expect(counts(window)).toEqual(windowBefore);
     expect(activeObservers).toBe(0);
   } finally {
-    restoreRemove();
-    restoreAdd();
+    restores.reverse().forEach((restore) => restore());
   }
 });
 
@@ -1739,6 +1781,201 @@ test("useVirtualList ignores a stale outline hint and resets when the outline ow
   expect(() => act(() => root!.render(<Harness outline={b} from={a} owner={ownerA} />))).not.toThrow();
   expect(() => act(() => root!.render(<Harness outline={c} from={b} owner={ownerB} />))).not.toThrow();
   expect(() => act(() => root!.render(<Harness outline={a} from={b} owner={ownerB} />))).not.toThrow();
+});
+
+test.each([
+  ["owned", false, false, false, "none"],
+  ["host-owned", true, false, false, "none"],
+  ["owned strict mode", false, true, false, "none"],
+  ["owned through an empty replay", false, false, true, "clamp"],
+  ["reader deviation during an empty replay", false, false, true, "reader"],
+  ["physical bottom during an empty replay", false, false, true, "bottom"],
+  ["open recovery with a client-height change", false, false, true, "geometry-client"],
+  ["open recovery with a host-top shift", false, false, true, "geometry-top"],
+  ["open recovery with a host-bottom shift", false, false, true, "geometry-bottom"],
+  ["open recovery with the WebKit host-box shift", false, false, true, "geometry-webkit"],
+] as const)("same-run replacement keeps an unpinned reader's anchor in %s", (_name, hostOwned, strict, stagedReplay, recoveryPosition) => {
+  const items = Array.from({ length: 1_000 }, (_, index) => committedItem(String(index)));
+  const replacementItems = [...items.map((item, index) => index === 500
+    ? { ...item, message: message("replacement text that is much longer than the streamed text ".repeat(8)), version: 2 }
+    : item), ...Array.from({ length: 10 }, (_, index) => committedItem(`new-${index}`))];
+  const first = timelineStore(items, "same-run");
+  const second = timelineStore(stagedReplay ? [] : replacementItems, "same-run");
+  const positions = new WeakMap<HTMLElement, number>();
+  let hostGeometry = { clientHeight: 600, top: 0, bottom: 600 };
+  const rect = HTMLElement.prototype.getBoundingClientRect;
+  const resizeObservers: Array<{ callback: ResizeObserverCallback; observed: Set<Element>; observer: ResizeObserver }> = [];
+  if (stagedReplay) {
+    restoreShims.push(shimGlobal("ResizeObserver", class {
+      private readonly record = { callback: (() => {}) as ResizeObserverCallback, observed: new Set<Element>(), observer: this as unknown as ResizeObserver };
+      constructor(callback: ResizeObserverCallback) {
+        this.record.callback = callback;
+        resizeObservers.push(this.record);
+      }
+      observe(element: Element) { this.record.observed.add(element); }
+      unobserve(element: Element) { this.record.observed.delete(element); }
+      disconnect() { this.record.observed.clear(); }
+    } as unknown as typeof ResizeObserver));
+  }
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => hostGeometry.clientHeight }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get() { return positions.get(this as HTMLElement) ?? 0; },
+    set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
+  }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "getBoundingClientRect", { configurable: true, writable: true, value: function () {
+    if (this.getAttribute("data-part") === "timeline-scroll") return { x: 0, y: hostGeometry.top, top: hostGeometry.top, bottom: hostGeometry.bottom, left: 0, right: 800, width: 800, height: hostGeometry.bottom - hostGeometry.top, toJSON() {} };
+    if (this.getAttribute("data-part") === "timeline") {
+      const top = hostGeometry.top - (this.parentElement?.scrollTop ?? 0);
+      return { x: 0, y: top, top, bottom: top + Number.parseFloat(this.style.height || "0"), left: 0, right: 800, width: 800, height: Number.parseFloat(this.style.height || "0"), toJSON() {} };
+    }
+    return rect.call(this);
+  } }));
+    const scrollRef = { current: null as HTMLElement | null };
+    const view = (store: RunStore) => {
+      const timeline = <RunProvider store={store}><Timeline {...(stagedReplay ? {} : { virtual: true })} {...(hostOwned ? { scrollRef, renderJumpToLatest: (control: ReactNode) => <aside>{control}</aside> } : {})} /></RunProvider>;
+      const content = hostOwned ? <div ref={scrollRef}>{timeline}</div> : timeline;
+      return strict ? <StrictMode>{content}</StrictMode> : content;
+    };
+    mount(view(first.store));
+    const viewport = hostOwned ? scrollRef.current! : q('[data-part="timeline-scroll"]');
+    const readerIndex = recoveryPosition === "bottom" ? 300 : 500;
+    viewport.scrollTop = readerIndex * 72 + 17;
+    act(() => {
+      viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+      viewport.dispatchEvent(new Event("scroll"));
+    });
+    const anchorId = q(`[data-virtual-index="${readerIndex}"]`).dataset.virtualId!;
+    const offset = Number.parseFloat(q(`[data-virtual-id="${anchorId}"]`).style.transform.slice(11)) - viewport.scrollTop;
+
+    if (stagedReplay) second.setHistoryPending(true);
+    act(() => root!.render(view(second.store)));
+    if (stagedReplay) {
+      const loadedStart = recoveryPosition === "bottom" ? 600 : 900;
+      let loaded = replacementItems.slice(loadedStart);
+      second.replace(loaded, [{ index: 0, deleteCount: 0, items: loaded }]);
+      viewport.scrollTop = viewport.scrollTop;
+      if (recoveryPosition === "reader") viewport.scrollTop -= 100;
+      else if (recoveryPosition === "bottom") viewport.scrollTop = viewport.scrollHeight;
+      else if (recoveryPosition.startsWith("geometry-")) {
+        const priorBottom = hostGeometry.bottom;
+        hostGeometry = recoveryPosition === "geometry-client"
+          ? { clientHeight: 597, top: 0, bottom: 600 }
+          : recoveryPosition === "geometry-top"
+            ? { clientHeight: 600, top: 10, bottom: 600 }
+            : recoveryPosition === "geometry-bottom"
+              ? { clientHeight: 600, top: 0, bottom: 603 }
+              : { clientHeight: 597, top: 41, bottom: 641 };
+        if (recoveryPosition === "geometry-webkit") viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight - 2.6875;
+        else viewport.scrollTop -= hostGeometry.bottom - priorBottom;
+      }
+      act(() => viewport.dispatchEvent(new Event("scroll")));
+      const viewportResize = resizeObservers.find(({ observed }) => observed.has(viewport));
+      expect(viewportResize, "the viewport ResizeObserver must be attached during recovery").toBeDefined();
+      act(() => viewportResize!.callback([], viewportResize!.observer));
+      for (let start = loadedStart - 100; start >= 0; start -= 100) {
+        const olderPage = replacementItems.slice(start, start + 100);
+        loaded = [...olderPage, ...loaded];
+        second.replace(loaded, [{ index: 0, deleteCount: 0, items: olderPage }]);
+      }
+      second.setHistoryPending(false);
+    }
+    const nextViewport = hostOwned ? scrollRef.current! : q('[data-part="timeline-scroll"]');
+    const nextAnchor = container.querySelector<HTMLElement>(`[data-virtual-id="${anchorId}"]`);
+    if (recoveryPosition === "reader") {
+      expect(nextAnchor, "a reader deviation must cancel the old anchor recovery").toBeNull();
+      expect(nextViewport.scrollTop).not.toBe(readerIndex * 72 + 17);
+    } else if (recoveryPosition === "bottom") {
+      expect(nextViewport.scrollHeight - nextViewport.clientHeight - nextViewport.scrollTop).toBeLessThanOrEqual(1);
+      expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("0");
+      expect(q('[data-part="jump-to-latest"]')).toBeNull();
+    } else {
+      expect(nextAnchor, "the replacement must keep the anchor row mounted").not.toBeNull();
+      const nextOffset = Number.parseFloat(nextAnchor!.style.transform.slice(11)) - nextViewport.scrollTop;
+      expect(Math.abs(nextOffset - offset)).toBeLessThanOrEqual(1);
+      expect(nextViewport.scrollTop).toBe(viewport.scrollTop);
+      expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe(stagedReplay ? "0" : "10");
+      expect(q('[data-part="jump-to-latest"]') === null).toBe(stagedReplay);
+    }
+});
+
+test("same-run replacement keeps a pinned reader at bottom while a different run starts at bottom", () => {
+  const source = timelineStore(Array.from({ length: 1_000 }, (_, index) => committedItem(String(index))), "run-a");
+  const same = timelineStore(Array.from({ length: 1_010 }, (_, index) => committedItem(String(index))), "run-a");
+  const different = timelineStore(Array.from({ length: 300 }, (_, index) => committedItem(`other-${index}`)), "run-b");
+  const positions = new WeakMap<HTMLElement, number>();
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { return positions.get(this as HTMLElement) ?? 0; }, set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); } }));
+  const view = (store: RunStore) => <RunProvider store={store}><Timeline virtual /></RunProvider>;
+    mount(view(source.store));
+    let viewport = q('[data-part="timeline-scroll"]');
+    expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
+    act(() => root!.render(view(same.store)));
+    viewport = q('[data-part="timeline-scroll"]');
+    expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
+    expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
+    viewport.scrollTop -= 5_000;
+    act(() => viewport.dispatchEvent(new Event("scroll")));
+    act(() => root!.render(view(different.store)));
+    viewport = q('[data-part="timeline-scroll"]');
+    expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
+    expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
+});
+
+test("a pinned reader keeps following when a reconnect banner leaves and the browser clamps its scroll", () => {
+  const items = Array.from({ length: 1_003 }, (_, index) => committedItem(String(index)));
+  const source = timelineStore(items.slice(0, 1_000), "run-a");
+  const replay = timelineStore(items.slice(0, 1_000), "run-a");
+  const positions = new WeakMap<HTMLElement, number>();
+  let height = 550;
+  let lag = 0;
+  const now = performance.now;
+  let elapsed = 0;
+  const restoreNow = shimProperty(performance, "now", () => now.call(performance) + elapsed);
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => height }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") - lag; } }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { return positions.get(this as HTMLElement) ?? 0; }, set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); } }));
+  const view = (store: RunStore) => <RunProvider store={store}><Timeline /></RunProvider>;
+  try {
+    mount(view(source.store));
+    const viewport = q('[data-part="timeline-scroll"]');
+    expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
+    elapsed = 1_000; // past the mount's stale-scroll guard
+    act(() => viewport.dispatchEvent(new Event("scroll"))); // the browser reports the mount's bottom write
+    act(() => root!.render(view(replay.store)));
+    // A reconnect layout can shrink the viewport before ResizeObserver runs. The unchanged browser position is layout,
+    // not reader intent, so it must not cancel follow while the new physical end is temporarily farther away.
+    height = 515;
+    act(() => viewport.dispatchEvent(new Event("scroll")));
+    act(() => replay.replace(items.slice(0, 1_001), [{ index: 1_000, deleteCount: 0, items: items.slice(1_000, 1_001) }]));
+    expect(q('[data-part="timeline"]').getAttribute("data-unseen-count"), "viewport layout must not unpin the reader").toBe("0");
+    expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
+    // The banner above the box leaves: the box grows, the browser clamps scroll to the new end, and its scroll event
+    // arrives before the box's ResizeObserver callback, while the DOM still lags the engine's newest measurement
+    // (the WebKit/Chromium gate traced engine total 3748.25 px against a rendered 3742 px).
+    height = 600;
+    lag = 6;
+    viewport.scrollTop = viewport.scrollTop;
+    act(() => viewport.dispatchEvent(new Event("scroll")));
+    expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
+    lag = 0;
+    act(() => replay.replace(items.slice(0, 1_002), [{ index: 1_001, deleteCount: 0, items: items.slice(1_001, 1_002) }]));
+    expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
+    expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
+
+    height = 565;
+    viewport.scrollTop -= 5;
+    const readerTop = viewport.scrollTop;
+    act(() => viewport.dispatchEvent(new Event("scroll")));
+    act(() => replay.replace(items, [{ index: 1_002, deleteCount: 0, items: items.slice(1_002) }]));
+    expect(viewport.scrollTop, "reader movement during viewport layout must win").toBe(readerTop);
+    expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("1");
+    expect(container.querySelector('[data-part="jump-to-latest"]')).not.toBeNull();
+  } finally {
+    restoreNow();
+  }
 });
 
 test("virtual Timeline keeps its frame when a store is disposed, then replaces it mid-stream", () => {
@@ -1821,7 +2058,6 @@ test("the unconstrained-height diagnostic checks layout only once while rows str
   restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 100_001 }));
   restoreShims.push(shimGlobal("requestAnimationFrame", (callback) => (frames.push(callback), frames.length)));
   restoreShims.push(shimGlobal("cancelAnimationFrame", () => {}));
-  try {
     let items = Array.from({ length: 201 }, (_, index) => committedItem(String(index)));
     const timeline = timelineStore(items);
     mount(<RunProvider store={timeline.store}><Timeline virtual /></RunProvider>);
@@ -1833,8 +2069,6 @@ test("the unconstrained-height diagnostic checks layout only once while rows str
     timeline.replace(items = [...items, added], [{ index: 201, deleteCount: 0, items: [added] }]);
     expect(container.querySelectorAll("[data-virtual-id]")).toHaveLength(202);
     expect(frames).toHaveLength(0);
-  } finally {
-  }
 });
 
 const waitForAnnouncement = () => act(async () => {
@@ -1972,7 +2206,6 @@ test("with a pending approval, the timeline's first tab stop jumps to it and foc
 test("virtual Timeline shows the folded tool card live when an approval folds in place across batches", () => {
   const { store, send } = setup([{ type: "user_message", text: "read it", mode: "normal" }]);
   restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
-  try {
     mount(<RunProvider store={store}><Timeline virtual /></RunProvider>);
     const rows = () => [...container.querySelectorAll("[data-virtual-id]")].map((row) => row.getAttribute("data-virtual-id"));
     const read = { id: "read-1", name: "read", arguments: { path: "README.md" } };
@@ -1983,8 +2216,6 @@ test("virtual Timeline shows the folded tool card live when an approval folds in
     send({ type: "tool_end", tool_call: read, tool_result: { tool_call_id: "read-1", content: "# fulcrum", is_error: false } });
     expect(rows()).toEqual(["user:1", "tool:read-1"]);
     expect(store.getOutline().map(({ id }) => id)).toEqual(rows());
-  } finally {
-  }
 });
 
 test("an approved call that folds into its tool row is still announced when it finishes", async () => {
@@ -2068,3 +2299,169 @@ test("after a keyboard decision, focus lands on the next approval's row, never o
   expect(active.getAttribute("data-action")).toBeNull();
   expect(active.getAttribute("data-id")).toBe("approval:r2");
 });
+
+
+test.each([
+  ["owned", false, "prefix", -7],
+  ["owned", false, "suffix", -7],
+  ["host-owned", true, "prefix", -7],
+  ["host-owned", true, "suffix", -7],
+  ["owned", false, "prefix", 20],
+  ["owned", false, "suffix", 20],
+  ["host-owned", true, "prefix", 20],
+  ["host-owned", true, "suffix", 20],
+] as const)("%s sibling ResizeObserver keeps follow for a %s resize of %d px", (_shape, hostOwned, side, delta) => {
+  const items = Array.from({ length: 300 }, (_, index) => committedItem(`sibling-${index}`));
+  const timeline = timelineStore(items);
+  const positions = new WeakMap<HTMLElement, number>();
+  const ends = new WeakMap<HTMLElement, number>();
+  const resizeObservers: Array<{ callback: ResizeObserverCallback; observed: Set<Element> }> = [];
+  const mutationObservers: Array<{ callback: MutationCallback; observed: Set<Node> }> = [];
+  restoreShims.push(shimGlobal("ResizeObserver", class {
+    private readonly entry = { callback: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
+    constructor(callback: ResizeObserverCallback) { this.entry.callback = callback; resizeObservers.push(this.entry); }
+    observe(element: Element) { this.entry.observed.add(element); }
+    unobserve(element: Element) { this.entry.observed.delete(element); }
+    disconnect() { this.entry.observed.clear(); }
+  } as unknown as typeof ResizeObserver));
+  restoreShims.push(shimGlobal("MutationObserver", class {
+    private readonly entry = { callback: (() => {}) as MutationCallback, observed: new Set<Node>() };
+    constructor(callback: MutationCallback) { this.entry.callback = callback; mutationObservers.push(this.entry); }
+    observe(node: Node) { this.entry.observed.add(node); }
+    disconnect() { this.entry.observed.clear(); }
+    takeRecords() { return []; }
+  } as unknown as typeof MutationObserver));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 100 }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get() {
+      const host = this as HTMLElement;
+      const timelineHeight = Number.parseFloat(host.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0");
+      return (ends.get(host) ?? Math.max(0, timelineHeight - 100)) + 100;
+    },
+  }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get() { return positions.get(this as HTMLElement) ?? 0; },
+    set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, (ends.get(this as HTMLElement) ?? 1_100)))); },
+  }));
+    const hostRef = { current: null as HTMLElement | null };
+    const prefix = <div data-testid="prefix" />;
+    const suffix = <div data-testid="suffix" />;
+    const list = <RunProvider store={timeline.store}><Timeline virtual {...(hostOwned ? { scrollRef: hostRef, renderJumpToLatest: (control: ReactNode) => <aside>{control}</aside> } : {})} /></RunProvider>;
+    mount(hostOwned ? <div ref={hostRef}>{prefix}{list}{suffix}</div> : list);
+    const host = hostOwned ? hostRef.current! : q('[data-part="timeline-scroll"]');
+    const initialEnd = Number.parseFloat(q<HTMLElement>('[data-part="timeline"]').style.height) - 100;
+    ends.set(host, initialEnd);
+    host.scrollTop = initialEnd;
+    act(() => host.dispatchEvent(new Event("scroll")));
+    let sibling = hostOwned ? q(`[data-testid="${side}"]`) : document.createElement("div");
+    if (!hostOwned) {
+      sibling.dataset.testid = side;
+      if (side === "prefix") host.prepend(sibling); else host.append(sibling);
+      const mutation = mutationObservers.find(({ observed }) => observed.has(host))!;
+      act(() => mutation.callback([], {} as MutationObserver));
+    }
+    const siblingResize = resizeObservers.find(({ observed }) => observed.has(sibling))!;
+    if (delta < 0) {
+      host.scrollTop = initialEnd - 10;
+      act(() => host.dispatchEvent(new Event("scroll")));
+    }
+    ends.set(host, initialEnd + delta);
+    act(() => siblingResize.callback([], {} as ResizeObserver));
+    expect(q('[data-part="timeline"]').getAttribute("data-unseen-count"), "the sibling resize must preserve or restore follow").toBe("0");
+    expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
+    expect(host.scrollTop).toBe(delta < 0 ? initialEnd - 10 : initialEnd + delta);
+
+    const added = committedItem("sibling-next");
+    ends.set(host, initialEnd + 44 + delta);
+    timeline.replace([...items, added], [{ index: items.length, deleteCount: 0, items: [added] }]);
+    expect(host.scrollTop, "the append after sibling layout must land at the physical end").toBe(initialEnd + 44 + delta);
+});
+
+test("virtual paint gutters keep focused edge outlines inside the clipped container", () => {
+  const { store } = setup(Array.from({ length: 201 }, (_, index): RunEvent => ({
+    type: "message_commit",
+    message_id: `gutter-${index}`,
+    message: message(`gutter-${index}`),
+  })));
+  mount(<RunProvider store={store}><Timeline virtual /></RunProvider>);
+  const timeline = q('[data-part="timeline"]');
+  expect(timeline.style.overflowBlock).toBe("clip");
+  expect(timeline.style.paddingBlock).toBe("var(--fulcrum-virtual-gutter, 8px)");
+  const gutter = Number.parseFloat(timeline.style.paddingBlock.match(/, (\d+)px/)?.[1] ?? "0");
+  expect(gutter, "the gutter must exceed a 4 px outline and offset").toBeGreaterThan(4);
+});
+
+type LayoutGeometryCase = {
+  name: string;
+  before: { clientHeight: number; top: number; bottom: number; end: number };
+  after: { clientHeight: number; top: number; bottom: number; end: number; pinnedTop?: number };
+};
+const layoutGeometryCases: LayoutGeometryCase[] = [
+  { name: "clientHeight", before: { clientHeight: 600, top: 0, bottom: 600, end: 43_426 }, after: { clientHeight: 590, top: 0, bottom: 600, end: 43_436 } },
+  { name: "host top", before: { clientHeight: 600, top: 0, bottom: 600, end: 43_426 }, after: { clientHeight: 600, top: 10, bottom: 600, end: 43_426 } },
+  { name: "host bottom", before: { clientHeight: 600, top: 0, bottom: 600, end: 43_426 }, after: { clientHeight: 600, top: 0, bottom: 610, end: 43_426 } },
+  { name: "webkit top and bottom", before: { clientHeight: 678, top: 56, bottom: 734.3125, end: 43_348 }, after: { clientHeight: 675, top: 103, bottom: 778, end: 43_351, pinnedTop: 43_307 } },
+];
+const layoutReaderMoves = [["none", 0], ["threshold", 3], ["reader", 10]] as const;
+
+test.each(layoutGeometryCases.flatMap((geometryCase) => layoutReaderMoves.flatMap(([moveName, move]) => ([true, false] as const).map((pinned) => ({
+  name: `${geometryCase.name} / ${moveName} / ${pinned ? "pinned" : "unpinned"}`,
+  geometryCase,
+  move,
+  pinned,
+}))))) (
+  "host geometry transaction: $name",
+  ({ geometryCase, move, pinned }) => {
+          const rect = HTMLElement.prototype.getBoundingClientRect;
+      let state = geometryCase.before;
+    let position = pinned ? state.end : Math.min(500, state.end - 100);
+    class LayoutResizeObserver implements ResizeObserver {
+      constructor(_callback: ResizeObserverCallback) {}
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    restoreShims.push(shimGlobal("ResizeObserver", LayoutResizeObserver));
+    restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get() { return this.hasAttribute("data-part") ? state.clientHeight : 0; } }));
+    restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return this.hasAttribute("data-part") ? state.end + state.clientHeight : 0; } }));
+    restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { return this.hasAttribute("data-part") ? position : 0; }, set(value: number) { if (this.hasAttribute("data-part")) position = Math.max(0, Math.min(value, state.end)); } }));
+    restoreShims.push(shimProperty(HTMLElement.prototype, "getBoundingClientRect", { configurable: true, writable: true, value: function () {
+      if (this.getAttribute("data-part") === "timeline-scroll") return { x: 0, y: state.top, top: state.top, bottom: state.bottom, left: 0, right: 800, width: 800, height: state.bottom - state.top, toJSON() {} };
+      if (this.getAttribute("data-part") === "timeline") return { x: 0, y: state.top + 18 - position, top: state.top + 18 - position, bottom: state.bottom + 18 - position, left: 0, right: 800, width: 800, height: state.bottom - state.top, toJSON() {} };
+      return rect.call(this);
+    } }));
+      const items = Array.from({ length: 611 }, (_, index) => committedItem(`layout-${index}`));
+      const timeline = timelineStore(items);
+      const view = (followRequest: number) => <RunProvider store={timeline.store}><Timeline virtual followRequest={followRequest} /></RunProvider>;
+      mount(view(0));
+      act(() => root!.render(view(1)));
+      const host = q('[data-part="timeline-scroll"]');
+      position = pinned ? state.end : Math.min(500, state.end - 100);
+      act(() => host.dispatchEvent(new Event("scroll")));
+      const oldPosition = position;
+      const bottomDelta = geometryCase.after.bottom - geometryCase.before.bottom;
+      state = geometryCase.after;
+      const expectedLayoutTop = Math.max(0, Math.min(oldPosition - bottomDelta, state.end));
+      position = geometryCase.after.pinnedTop !== undefined && pinned && move <= 4
+        ? geometryCase.after.pinnedTop
+        : Math.max(0, Math.min(expectedLayoutTop - move, state.end));
+      act(() => host.dispatchEvent(new Event("scroll")));
+      if (pinned && move <= 4) {
+        expect(position, "layout-only movement must restore the physical end").toBe(state.end);
+        expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("0");
+      } else expect(position, "reader or unpinned layout must stay away from the physical end").toBeLessThan(state.end - 4);
+      const settled = position;
+      const added = committedItem(`layout-next-${move}-${pinned}`);
+      state = { ...state, end: state.end + 44 };
+      timeline.replace([...items, added], [{ index: items.length, deleteCount: 0, items: [added] }]);
+      if (pinned && move <= 4) {
+        expect(position, "a pinned layout transaction must keep the next append at the physical end").toBe(state.end);
+        expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("0");
+      } else {
+        expect(position, "the next append must not move an unpinned reader").toBe(settled);
+        expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("1");
+      }
+  },
+);

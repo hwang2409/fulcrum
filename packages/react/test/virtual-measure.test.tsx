@@ -8,7 +8,7 @@ domShimAlarm(import.meta.path);
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
-import { RunProvider, Timeline } from "../src/index.js";
+import { RunProvider, Timeline, type TimelineViewport } from "../src/index.js";
 
 afterAll(() => GlobalRegistrator.unregister());
 
@@ -65,15 +65,16 @@ test("two row growths before measurement keep a pinned reader at the physical en
     expect(physicalHeight - host.clientHeight - host.scrollTop).toBeLessThanOrEqual(4);
 
     const wheel = new Event("wheel");
-    Object.defineProperty(wheel, "deltaY", { value: -100 });
+    const restoreDeltaY = shimProperty(wheel, "deltaY", { value: -100 });
     act(() => host.dispatchEvent(wheel));
+    restoreDeltaY();
     host.scrollTop = physicalHeight - host.clientHeight - 120;
     act(() => host.dispatchEvent(new Event("scroll")));
     act(() => store.dispatch(commits("detached", 1)[0]!));
     physicalHeight -= 200;
     host.scrollTop = host.scrollTop;
     act(() => host.dispatchEvent(new Event("scroll")));
-    expect(container.querySelector('[data-part="jump-to-latest"]')).not.toBeNull();
+    expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
   } finally {
     act(() => root.unmount());
     container.remove();
@@ -83,6 +84,102 @@ test("two row growths before measurement keep a pinned reader at the physical en
     restoreCancelFrame();
     restoreRequestFrame();
     restoreResizeObserver();
+  }
+});
+
+test("same-run replay drops the cached height of a changed streamed row", () => {
+  const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
+  const frames: FrameRequestCallback[] = [];
+  const restores = [
+    shimGlobal("ResizeObserver", class {
+      private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
+      constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
+      observe(element: Element) { this.entry.observed.add(element); }
+      unobserve(element: Element) { this.entry.observed.delete(element); }
+      disconnect() { this.entry.observed.clear(); }
+    } as unknown as typeof ResizeObserver),
+    shimGlobal("requestAnimationFrame", (callback) => (frames.push(callback), frames.length)),
+    shimGlobal("cancelAnimationFrame", () => {}),
+    shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }),
+  ];
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  let unmounted = false;
+  try {
+    const events = commits("row", 201);
+    const first = createRunStore((flush) => flush(), { runId: "same-run" });
+    first.resync(events);
+    const second = createRunStore((flush) => flush(), { runId: "same-run" });
+    second.resync(events.map((event, index) => index === 200 && event.type === "message_commit"
+      ? { ...event, message: { ...event.message, content: [{ type: "text", text: "final text ".repeat(40) }] } }
+      : event));
+    let viewport: TimelineViewport | undefined;
+    const view = (store: typeof first) => <RunProvider store={store}><Timeline virtual onViewport={(next) => { viewport = next; }} /></RunProvider>;
+    act(() => root.render(view(first)));
+    const rows = observers.find(({ observed }) => [...observed].some((element) => element.hasAttribute("data-virtual-id")))!;
+    const entries = [...rows.observed].map((target) => ({ target, borderBoxSize: [{ blockSize: target.getAttribute("data-virtual-id") === "message:row-200" ? 80 : 40, inlineSize: 800 }], contentRect: { height: 40 } }));
+    act(() => rows.report(entries as unknown as ResizeObserverEntry[], {} as ResizeObserver));
+    act(() => { for (const frame of frames.splice(0)) frame(0); });
+    act(() => root.render(view(second)));
+    act(() => root.unmount());
+    unmounted = true;
+    expect(viewport?.cache?.sizes).toContainEqual(["message:row-199", 40]);
+    expect(viewport?.cache?.sizes.find(([id]) => id === "message:row-200")).toBeUndefined();
+  } finally {
+    if (!unmounted) act(() => root.unmount());
+    container.remove();
+    restores.reverse().forEach((restore) => restore());
+  }
+});
+
+test("a pinned late row measurement re-applies the bottom after the browser shifts the range", () => {
+  const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
+  const frames: FrameRequestCallback[] = [];
+  const restores = [
+    shimGlobal("ResizeObserver", class {
+      private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
+      constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
+      observe(element: Element) { this.entry.observed.add(element); }
+      unobserve(element: Element) { this.entry.observed.delete(element); }
+      disconnect() { this.entry.observed.clear(); }
+    } as unknown as typeof ResizeObserver),
+    shimGlobal("requestAnimationFrame", (callback) => (frames.push(callback), frames.length)),
+    shimGlobal("cancelAnimationFrame", () => {}),
+    shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }),
+  ];
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    const store = createRunStore((flush) => flush());
+    store.resync(commits("late", 201));
+    act(() => root.render(<RunProvider store={store}><Timeline virtual /></RunProvider>));
+    const scroll = container.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
+    expect(scroll).not.toBeNull();
+    // The pinned reader sits where the adapter put it, the engine's end; a browser cannot hold another position
+    // without a scroll callback. The DOM range is two pixels taller than the virtualizer's measured range, as WebKit
+    // can report after reconnect, so the row observer must take the reader to the DOM end.
+    let scrollTop = 201 * 72 + 16 - 600;
+    const scrollHeight = 201 * 72 + 16 + 2;
+    restores.push(
+      shimProperty(scroll!, "scrollTop", { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value; } }),
+      shimProperty(scroll!, "scrollHeight", { configurable: true, get: () => scrollHeight }),
+    );
+    const rows = observers.find(({ observed }) => [...observed].some((element) => element.hasAttribute("data-virtual-id")));
+    expect(rows).toBeDefined();
+    const target = [...rows!.observed][0]!;
+    const timeline = container.querySelector<HTMLElement>('[data-part="timeline"]')!;
+    const heightBefore = Number.parseFloat(timeline.style.height);
+    act(() => rows!.report([{ target, borderBoxSize: [{ blockSize: 120, inlineSize: 800 }], contentRect: { height: 120 } }] as unknown as ResizeObserverEntry[], {} as ResizeObserver));
+    expect(Number.parseFloat(timeline.style.height), "the ResizeObserver delivery must commit the measured extent before the next frame").toBeGreaterThan(heightBefore);
+    expect(scrollHeight - 600 - scrollTop, "the same ResizeObserver delivery must restore the DOM end before the next paint").toBeLessThanOrEqual(0.5);
+    act(() => { for (const frame of frames.splice(0)) frame(0); });
+    expect(scrollHeight - 600 - scrollTop).toBeLessThanOrEqual(0.5);
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+    restores.reverse().forEach((restore) => restore());
   }
 });
 
@@ -112,10 +209,9 @@ test("a row resize reported just before a resync replaces its id is not measured
     expect(rows).toBeDefined();
     const entries = [...rows!.observed].map((target) => ({ target, borderBoxSize: [{ blockSize: 41, inlineSize: 800 }], contentRect: { height: 41 } }));
     act(() => rows!.report(entries as unknown as ResizeObserverEntry[], {} as ResizeObserver));
-    // A history rebuild (a reconnect, a page that renumbers ids) commits before the frame that flushes the resize.
+    // The delivery is complete before a history rebuild can replace the measured ids; no deferred frame remains.
     act(() => store.resync(commits("b", 201)));
-    expect(frames.length).toBe(1);
-    expect(() => act(() => { for (const frame of frames.splice(0)) frame(0); })).not.toThrow();
+    expect(frames.length).toBe(0);
     expect(container.querySelector('[data-virtual-id^="message:b-"]')).not.toBeNull();
   } finally {
     act(() => root.unmount());
@@ -124,5 +220,120 @@ test("a row resize reported just before a resync replaces its id is not measured
     restoreCancelFrame();
     restoreRequestFrame();
     restoreResizeObserver();
+  }
+});
+
+test("touch movement wins over an owned end write when the row observer arrives first", () => {
+  const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
+  const restores = [
+    shimGlobal("ResizeObserver", class {
+      private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
+      constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
+      observe(element: Element) { this.entry.observed.add(element); }
+      unobserve(element: Element) { this.entry.observed.delete(element); }
+      disconnect() { this.entry.observed.clear(); }
+    } as unknown as typeof ResizeObserver),
+    shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }),
+  ];
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    const store = createRunStore((flush) => flush());
+    store.resync(commits("touch-row", 201));
+    act(() => root.render(<RunProvider store={store}><Timeline virtual /></RunProvider>));
+    const scroll = container.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+    const scrollHeight = () => Number.parseFloat(container.querySelector<HTMLElement>('[data-part="timeline"]')!.style.height) + 16;
+    let scrollTop = scrollHeight() - 600;
+    restores.push(
+      shimProperty(scroll, "scrollTop", { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value; } }),
+      shimProperty(scroll, "scrollHeight", { configurable: true, get: scrollHeight }),
+    );
+    act(() => scroll.dispatchEvent(new Event("touchstart")));
+    scrollTop -= 30;
+    const rows = observers.find(({ observed }) => [...observed].some((element) => element.hasAttribute("data-virtual-id")))!;
+    const target = [...rows.observed][0]!;
+    act(() => rows.report([{ target, borderBoxSize: [{ blockSize: 120, inlineSize: 800 }], contentRect: { height: 120 } }] as unknown as ResizeObserverEntry[], {} as ResizeObserver));
+    expect(scrollHeight() - 600 - scrollTop, "the row observer must not acknowledge the stale owned end after reader touch movement").toBeGreaterThan(4);
+    const readerTop = scrollTop;
+    act(() => store.dispatch(commits("touch-next", 1)[0]!));
+    expect(scrollTop, "the next append must not restore the stale owned end").toBe(readerTop);
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+    restores.reverse().forEach((restore) => restore());
+  }
+});
+
+test("host removal invalidates stale ResizeObserver completion", () => {
+  const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
+  const mutations: MutationCallback[] = [];
+  const positions = new WeakMap<HTMLElement, number>();
+  const restores = [
+    shimGlobal("MutationObserver", class {
+      constructor(callback: MutationCallback) { mutations.push(callback); }
+      observe() {}
+      disconnect() {}
+      takeRecords() { return []; }
+    } as unknown as typeof MutationObserver),
+    shimGlobal("ResizeObserver", class {
+      private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
+      constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
+      observe(element: Element) { this.entry.observed.add(element); }
+      unobserve(element: Element) { this.entry.observed.delete(element); }
+      disconnect() { this.entry.observed.clear(); }
+    } as unknown as typeof ResizeObserver),
+    shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }),
+    shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") }),
+    shimProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { return positions.get(this as HTMLElement) ?? 0; }, set(value: number) { positions.set(this as HTMLElement, value); } }),
+  ];
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const ref = { current: null as HTMLElement | null };
+  const store = createRunStore((flush) => flush());
+  store.resync(commits("stale", 201));
+  const view = (target: "old" | "new") => <RunProvider store={store}>
+    <div key={target} data-testid={`${target}-stale-host`} ref={ref}><span data-testid={`${target}-sibling`} /><Timeline virtual scrollRef={ref} renderJumpToLatest={(control) => control} /></div>
+  </RunProvider>;
+  try {
+    act(() => root.render(view("old")));
+    const host = container.querySelector<HTMLElement>('[data-testid="old-stale-host"]')!;
+    host.scrollTop = host.scrollHeight - host.clientHeight;
+    act(() => host.dispatchEvent(new Event("scroll")));
+    const rows = observers.find(({ observed }) => [...observed].some((element) => element.hasAttribute("data-virtual-id")))!;
+    const viewport = observers.find(({ observed }) => observed.has(host))!;
+    const sibling = observers.find(({ observed }) => [...observed].some((element) => element.getAttribute("data-testid") === "old-sibling"))!;
+    const target = [...rows.observed][0]!;
+    const oldMutation = mutations[0]!;
+    expect(oldMutation, "the old host must have a MutationObserver callback to invalidate").toBeDefined();
+    act(() => root.render(view("new")));
+    const newHost = container.querySelector<HTMLElement>('[data-testid="new-stale-host"]')!;
+    expect(ref.current).toBe(newHost);
+    const newTop = newHost.scrollTop;
+    host.scrollTop = 1_000;
+    restores.push(shimProperty(host, "scrollHeight", { configurable: true, get: () => 50_000 }));
+    act(() => {
+      host.dispatchEvent(new Event("scroll"));
+      host.dispatchEvent(new Event("touchend"));
+    });
+    expect(newHost.scrollTop, "stale input callbacks must not move the replacement host").toBe(newTop);
+    act(() => oldMutation([], {} as MutationObserver));
+    expect(newHost.scrollTop, "a stale mutation completion must not move the replacement host").toBe(newTop);
+    act(() => sibling.report([], {} as ResizeObserver));
+    expect(host.scrollTop, "a stale sibling completion must not write the removed host").toBe(1_000);
+    expect(newHost.scrollTop, "a stale sibling completion must not write the replacement host").toBe(newTop);
+    act(() => viewport.report([], {} as ResizeObserver));
+    expect(host.scrollTop, "a stale viewport completion must not write the removed host").toBe(1_000);
+    const detachedTop = host.scrollTop;
+    act(() => rows.report([{ target, borderBoxSize: [{ blockSize: 120, inlineSize: 800 }], contentRect: { height: 120 } }] as unknown as ResizeObserverEntry[], {} as ResizeObserver));
+    expect(host.scrollTop, "a stale row completion must not write the removed host").toBe(detachedTop);
+    act(() => store.dispatch(commits("stale-next", 1)[0]!));
+    expect(newHost.scrollTop, "stale completions must not cancel follow on the replacement host").toBeGreaterThan(newTop);
+    expect(container.querySelector('[data-part="jump-to-latest"]'), "stale completions must not detach the replacement host").toBeNull();
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+    restores.reverse().forEach((restore) => restore());
   }
 });

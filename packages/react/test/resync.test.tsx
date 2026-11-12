@@ -50,8 +50,8 @@ type Row = {
 const watchedIds = ["tool:a0", "tool:a19", "tool:b0", "tool:new", "tool:x"];
 const keyedFor = (...touched: string[]) => Object.fromEntries(touched.map((id) => [id, 1]));
 const noKeyed: Record<string, number> = {};
-// 20 tool rows at the 120 px estimate in a 600 px viewport: the bottom is scrollTop 1,800; a reader 1,000 px up sits at 800.
-const following = (scrollTop: number) => ({ scrollTop, fromBottom: 0, unseen: 0 });
+// The physical scroll position includes the virtual list's 8 px top and bottom gutters.
+const following = (logicalScrollTop: number) => ({ scrollTop: logicalScrollTop + 16, fromBottom: 0, unseen: 0 });
 
 const rows: Row[] = [
   {
@@ -66,9 +66,19 @@ const rows: Row[] = [
     name: "reconnect with one missed row (following)", setup: tools("a", 20), replay: [...tools("a", 20), ...tool("new")], reader: "following",
     expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19", "tool:new"), search: [...ids("a", 20), "tool:new"], announce: "tool read finished", virtual: { rows: 21, lastMounted: "tool:new", ...following(1_920) }, plain: { rows: [...ids("a", 20), "tool:new"], announce: "tool read finished" } },
   },
+  // Backlog rule (review of #100, m4): rows after the last surviving id are unseen when the reader is not pinned, the
+  // same rows the announcer calls new. The reader keeps its place across the reconnect (one engine per run id).
   {
     name: "reconnect with one missed row (reading older rows)", setup: tools("a", 20), replay: [...tools("a", 20), ...tool("new")], reader: "reading",
-    expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19", "tool:new"), search: [...ids("a", 20), "tool:new"], announce: "tool read finished", virtual: { rows: 21, lastMounted: "tool:a16", scrollTop: 800, fromBottom: 1_120, unseen: 0 }, plain: { rows: [...ids("a", 20), "tool:new"], announce: "tool read finished" } },
+    expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19", "tool:new"), search: [...ids("a", 20), "tool:new"], announce: "tool read finished", virtual: { rows: 21, lastMounted: "tool:a16", scrollTop: 816, fromBottom: 1_120, unseen: 1 }, plain: { rows: [...ids("a", 20), "tool:new"], announce: "tool read finished" } },
+  },
+  {
+    name: "reconnect with two missed rows (reading older rows)", setup: tools("a", 20), replay: [...tools("a", 20), ...tool("new"), ...tool("x")], reader: "reading",
+    expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19", "tool:new", "tool:x"), search: [...ids("a", 20), "tool:new", "tool:x"], announce: "2 new items", virtual: { rows: 22, lastMounted: "tool:a16", scrollTop: 816, fromBottom: 1_240, unseen: 2 }, plain: { rows: [...ids("a", 20), "tool:new", "tool:x"], announce: "2 new items" } },
+  },
+  {
+    name: "reconnect with two missed rows (following)", setup: tools("a", 20), replay: [...tools("a", 20), ...tool("new"), ...tool("x")], reader: "following",
+    expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19", "tool:new", "tool:x"), search: [...ids("a", 20), "tool:new", "tool:x"], announce: "2 new items", virtual: { rows: 22, lastMounted: "tool:x", ...following(2_040) }, plain: { rows: [...ids("a", 20), "tool:new", "tool:x"], announce: "2 new items" } },
   },
   {
     name: "same ids, pending change", setup: tools("a", 20), pending: tool("x"), replay: [...tools("a", 20), ...tool("x")], reader: "following",
@@ -76,15 +86,15 @@ const rows: Row[] = [
   },
   {
     name: "different ids (reading older rows)", setup: tools("a", 20), replay: tools("b", 20), reader: "reading",
-    expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19", "tool:b0"), search: ids("b", 20), announce: "", virtual: { rows: 20, lastMounted: "tool:b16", scrollTop: 800, fromBottom: 1_000, unseen: 0 }, plain: { rows: ids("b", 20), announce: "" } },
+    expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19", "tool:b0"), search: ids("b", 20), announce: "", virtual: { rows: 20, lastMounted: "tool:b16", scrollTop: 816, fromBottom: 1_000, unseen: 0 }, plain: { rows: ids("b", 20), announce: "" } },
   },
   {
     name: "rows -> empty", setup: tools("a", 20), replay: [], reader: "following",
-    expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19"), search: [], announce: "", virtual: { rows: 0, lastMounted: undefined, ...following(0) }, plain: { rows: [], announce: "" } },
+    expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19"), search: [], announce: "", virtual: { rows: 0, lastMounted: undefined, scrollTop: 0, fromBottom: 0, unseen: 0 }, plain: { rows: [], announce: "" } },
   },
   {
     name: "pending change, empty replacement", setup: tools("a", 20), pending: tool("x"), replay: [], reader: "following",
-    expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19", "tool:x"), search: [], announce: "", virtual: { rows: 0, lastMounted: undefined, ...following(0) }, plain: { rows: [], announce: "" } },
+    expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19", "tool:x"), search: [], announce: "", virtual: { rows: 0, lastMounted: undefined, scrollTop: 0, fromBottom: 0, unseen: 0 }, plain: { rows: [], announce: "" } },
   },
 ];
 
@@ -171,6 +181,9 @@ test.each(rows)("resync reaches every outline consumer whole: $name", async ({ s
   };
   search.dispose();
   expect(observed).toEqual(expected);
+  // The jump control and the announcer name the same new rows for a reader who is not pinned.
+  const announced = observed.announce === "" ? 0 : Number(/^(\d+) new items$/.exec(observed.announce)?.[1] ?? 1);
+  if (reader === "reading") expect(observed.virtual.unseen, "unseen rows match the announcer's new rows").toBe(announced);
 });
 
 // notify delivers a snapshot: a resync called from inside a store listener reaches every consumer on the next pass.

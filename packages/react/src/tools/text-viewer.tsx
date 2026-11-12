@@ -332,6 +332,7 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
   const [place, setPlace] = useState<Place>(follow ? "bottom" : "top");
   const [newOutput, setNewOutput] = useState(false);
   const seenLength = useRef(text.length);
+  const initialSizeReady = useRef(false);
   // useSegments either extends its array (a copy whose old segments are the same objects) or builds a new one: an
   // extension is one splice after the prior segments.
   const prior = useRef<TextSegment[]>([]);
@@ -347,6 +348,7 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
     scrollRef,
     enabled: true,
     outlineUpdate: update,
+    initialFollow: follow,
   });
   // A text row is one segment: it draws from the segment's own text, never from a slice of the whole text.
   const ranges = list.snapshot.rows.map((row) => {
@@ -356,10 +358,22 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
   });
   const whole = useWholeTokens(rows ? "" : text, metrics.lines, format, id, done, rows ? [] : ranges.map(({ start, end, done, slice }) => styledBlock(slice, start, end, format, id, done, start)), seed);
   useLayoutEffect(() => {
-    if (follow && following.current) list.scrollToEnd();
-    else if (text.length > seenLength.current) setNewOutput(true);
+    const grew = text.length > seenLength.current;
+    if (follow && following.current && grew) list.scrollToEnd();
+    // A pinned list follows its end itself (at the bottom = following), so its reader sees the new output.
+    else if (grew && !list.snapshot.pinned) setNewOutput(true);
     seenLength.current = text.length;
   }, [follow, text, list.scrollToEnd]);
+  useLayoutEffect(() => {
+    if (initialSizeReady.current || list.snapshot.totalSize <= 0) return;
+    const frame = requestAnimationFrame(() => {
+      const host = scrollRef.current;
+      if (!host || host.scrollHeight <= host.clientHeight) return;
+      initialSizeReady.current = true;
+      if (follow && following.current) list.scrollToEnd();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [follow, list.scrollToEnd, list.snapshot.totalSize]);
   // Opened by a control that unmounts (the closed preview's "open all"): focus moves to the viewer, not to the page.
   useLayoutEffect(() => { if (focus) scrollRef.current?.focus({ preventScroll: true }); }, []);
   const onScroll = (node: HTMLDivElement) => {
@@ -368,8 +382,10 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
     if (bottom) following.current = follow;
     else if (node.scrollTop < lastTop.current) following.current = false;
     lastTop.current = node.scrollTop;
-    setPlace(bottom || following.current ? "bottom" : node.scrollTop < 1 ? "top" : "middle");
-    if (bottom) setNewOutput(false);
+    // A scroll that keeps the same place (the viewer's own follow write) sets no state, so it costs no commit.
+    const next = bottom || following.current ? "bottom" : node.scrollTop < 1 ? "top" : "middle";
+    if (next !== place) setPlace(next);
+    if (bottom && newOutput) setNewOutput(false);
   };
   const jump = (end: boolean) => {
     const node = scrollRef.current!;

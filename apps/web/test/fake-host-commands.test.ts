@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { connectZeta } from "@fulcrum/zeta";
+import { connectZeta, fromZetaHistory } from "@fulcrum/zeta";
 import { createSessions, openSession } from "../src/session";
-import { startFakeZeta } from "../scripts/fake-zeta";
+import { LONG, startFakeZeta } from "../scripts/fake-zeta";
 
 async function credentials(fake: Awaited<ReturnType<typeof startFakeZeta>>) {
   const discovery = JSON.parse(await readFile(join(fake.home, "run", "serve.ws.json"), "utf8")) as { controller_token: string; observer_token: string };
@@ -58,6 +58,43 @@ const hostCommands = () => [{
   summary: "render a file",
   environment: { FOO: "bar" },
 }];
+
+test("fake zeta persists a live user append across replay", async () => {
+  const fake = await startFakeZeta({ origins: [], live: false });
+  const history = fake.historyOf(LONG);
+  let client: Awaited<ReturnType<typeof connectZeta>> | undefined;
+  try {
+    client = await connectZeta({ ...(await credentials(fake)), features: ["session_history_backward", "user_message_event", "delivery_id", "user_message_delivery_id"] });
+    await client.request("resume", { session_id: LONG });
+    const load = async () => {
+      const result = await client!.request("session_history", { session_id: LONG, before: null }) as { messages: unknown[] };
+      return fromZetaHistory(result.messages);
+    };
+    const first = await client.replay(LONG, load);
+    const appended = new Promise<void>((resolve, reject) => {
+      const deadline = setTimeout(() => { unsubscribe(); reject(new Error("timed out waiting for live append")); }, 1_000);
+      const unsubscribe = first.store.subscribeOutline(() => {
+        if (first.store.getOutline().at(-1)?.id !== "user:delivery:append-after-replay") return;
+        clearTimeout(deadline);
+        unsubscribe();
+        resolve();
+      });
+    });
+    fake.emit({ event: "user_message", session_id: LONG, text: "no delivery id", mode: "send", attachments: [] });
+    expect(fake.historyOf(LONG), "zeta persists an id-less echo only when its turn starts").toHaveLength(history.length);
+    fake.emit({ event: "user_message", session_id: LONG, text: "after replay", mode: "send", attachments: [], delivery_id: "append-after-replay" });
+    await appended;
+    first.release();
+
+    const second = await client.replay(LONG, load);
+    expect(second.store.getOutline().at(-1)?.id).toBe("user:delivery:append-after-replay");
+    second.release();
+  } finally {
+    client?.close();
+    fake.restoreHistory(LONG, history);
+    await fake.close();
+  }
+});
 
 test("fake zeta permits one controller and an observer, without observer cleanup", async () => {
   const fake = await startFakeZeta({ origins: [], live: false });

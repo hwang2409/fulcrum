@@ -9,6 +9,16 @@ const message = (text: string) => ({
   content: [{ type: "text", text }],
 });
 
+test("store exposes logical-run identity without scheduling reducer work", () => {
+  let scheduled = 0;
+  const identified = createRunStore(() => { scheduled++; }, { runId: "run-1" });
+  const anonymous = createRunStore(() => {});
+  expect(identified.runId).toBe("run-1");
+  expect(anonymous.runId).toBeUndefined();
+  expect(scheduled).toBe(0);
+  expect(() => createRunStore(() => {}, { runId: "" })).toThrow("runId must be non-empty");
+});
+
 test("100 dispatches in one burst notify subscribers exactly once", () => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((job) => jobs.push(job));
@@ -260,6 +270,19 @@ test("an unexpected reduction failure marks the store desynced until history rep
   store.resync([{ type: "user_message", text: "from history", mode: "send", delivery_id: "history" }]);
   expect(store.getDiagnostics().desynced).toBe(false);
   expect(store.getOutline()).toEqual([{ id: "user:delivery:history", kind: "user" }]);
+});
+
+test("outline snapshots publish whether progressive history is pending", () => {
+  const store = createRunStore((flush) => flush());
+  const pending: Array<boolean | undefined> = [];
+  store.subscribeOutline(() => pending.push(store.getOutlineSnapshot().historyPending));
+
+  expect(store.getOutlineSnapshot().historyPending).toBeUndefined();
+  store.beginHistory();
+  expect(store.getOutlineSnapshot().historyPending).toBe(true);
+  store.endHistory();
+  expect(store.getOutlineSnapshot().historyPending).toBeUndefined();
+  expect(pending).toEqual([true, undefined]);
 });
 
 test("history windows reject prepends after releasing their accepted events", () => {
@@ -675,7 +698,9 @@ const throwingType = (thrown: () => unknown) =>
   new Proxy({ type: "retry" }, { get(target, key, receiver) { if (key === "type") throw thrown(); return Reflect.get(target, key, receiver); } }) as RunEvent;
 const unreadable = [
   { name: "a null-prototype object", thrown: () => Object.create(null) as unknown },
-  { name: "an Error whose message getter throws", thrown: () => Object.defineProperty(new Error("x"), "message", { get() { throw new Error("message getter"); } }) },
+  { name: "an Error whose message getter throws", thrown: () => Object.create(Error.prototype, {
+    message: { get() { throw new Error("message getter"); } },
+  }) as Error },
   { name: "a Proxy whose every trap throws", thrown: () => new Proxy({}, new Proxy({}, { get() { return () => { throw new Error("trap"); }; } })) },
   { name: "a revoked Proxy", thrown: () => { const { proxy, revoke } = Proxy.revocable({}, {}); revoke(); return proxy; } },
   { name: "a Symbol.toPrimitive that throws", thrown: () => ({ [Symbol.toPrimitive]() { throw new Error("primitive"); } }) },

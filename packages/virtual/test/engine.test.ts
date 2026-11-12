@@ -72,6 +72,38 @@ describe("prefix and range math", () => {
     virtual.measure("b-0", 80);
     expect(virtual.getSnapshot().totalSize).toBe(240);
   });
+  test("full same-run rebuild keeps surviving unseen rows and adds only an exact suffix", () => {
+    const virtual = createVirtualizer({ estimateSize: () => 10, bottomThreshold: 0 });
+    virtual.setOutline(Array.from({ length: 5 }, (_, index) => ({ id: `row-${index}`, kind: "row" })));
+    virtual.setLoaded("all");
+    virtual.setViewport({ scrollTop: 0, size: 20, source: "user" });
+    virtual.setOutline([]);
+    virtual.setViewport({ scrollTop: 0, size: 20, source: "user" });
+    virtual.setOutline(Array.from({ length: 2 }, (_, index) => ({ id: `row-${index}`, kind: "row" })));
+    virtual.setFollow(false);
+    virtual.setOutline(Array.from({ length: 7 }, (_, index) => ({ id: `row-${index}`, kind: "row" })));
+    expect(virtual.getSnapshot().unseenCount).toBe(2);
+    virtual.setOutline([
+      { id: "row-0", kind: "row" },
+      { id: "replacement", kind: "row" },
+      ...Array.from({ length: 5 }, (_, index) => ({ id: `row-${index + 2}`, kind: "row" })),
+    ]);
+    expect(virtual.getSnapshot().unseenCount).toBe(2);
+    virtual.scrollToEnd();
+    virtual.setOutline(Array.from({ length: 8 }, (_, index) => ({ id: `row-${index}`, kind: "row" })));
+    expect(virtual.getSnapshot().unseenCount).toBe(0);
+  });
+
+  test("invalidating changed-row measurements removes their cached size", () => {
+    const virtual = createVirtualizer({ estimateSize: () => 10 });
+    virtual.setOutline([{ id: "changed", kind: "row" }, { id: "stable", kind: "row" }]);
+    virtual.measure("changed", 30);
+    virtual.measure("stable", 20);
+    virtual.invalidateMeasurements(["changed"]);
+    expect(virtual.snapshotCache().sizes).toEqual([["stable", 20]]);
+    expect(virtual.getSnapshot().totalSize).toBe(30);
+  });
+
   test("restores measured sizes and kind medians by stable id", () => {
     const first = createVirtualizer({ estimateSize: () => 100 });
     first.setOutline([{ id: "a", kind: "x" }, { id: "b", kind: "x" }]);
@@ -174,6 +206,50 @@ describe("anchoring", () => {
     expect(result.appliedCorrection).toBe(-2);
     expect(virtual.beforeMutation().anchor?.id).toBe("row-2");
   });
+  test("a stable reader anchor stays owned after progressive replay returns it", () => {
+    const virtual = engine([10, 10, 10, 10], 10, 12);
+    let token = { ...virtual.beforeMutation(), anchor: { id: "row-2", index: 2, offset: 8 } };
+    virtual.setOutline(items([10, 10, 10, 10]).outline.slice(3));
+    virtual.afterMutation(token, { recoveryComplete: false });
+
+    token = virtual.beforeMutation();
+    virtual.setOutline(items([10, 10, 10, 10]).outline);
+    virtual.afterMutation(token);
+    token = virtual.beforeMutation();
+    virtual.measure("row-1", 20);
+    virtual.afterMutation(token);
+    expect(virtual.getSnapshot().scrollTop).toBe(22);
+  });
+  test("a later progressive page cannot replace a held reader anchor", () => {
+    const virtual = engine([10, 10, 10, 10, 10], 10, 12);
+    const outline = items([10, 10, 10, 10, 10]).outline;
+    const original = { ...virtual.beforeMutation(), anchor: { id: "row-2", index: 2, offset: 8 } };
+    virtual.setOutline(outline.slice(3));
+    expect(virtual.afterMutation(original, { recoveryComplete: false }).recoveryPending).toBe(true);
+
+    virtual.setViewport({ scrollTop: 0, size: 10, source: "programmatic" });
+    const laterPage = virtual.beforeMutation();
+    virtual.setOutline([outline[1]!, outline[3]!, outline[4]!]);
+    expect(virtual.afterMutation(laterPage, { recoveryComplete: false }).recoveryPending).toBe(true);
+
+    const restored = virtual.beforeMutation();
+    virtual.setOutline(outline);
+    expect(virtual.afterMutation(restored, { recoveryComplete: true })).toMatchObject({ recoveryPending: false, scrollTop: 12 });
+  });
+  test("progressive recovery waits for completion before using the nearest surviving row", () => {
+    const virtual = engine([10, 10, 10, 10], 10, 12);
+    const token = { ...virtual.beforeMutation(), anchor: { id: "row-2", index: 2, offset: 8 } };
+    virtual.setOutline(items([10, 10, 10, 10]).outline.slice(3));
+    expect(virtual.afterMutation(token, { recoveryComplete: false })).toMatchObject({
+      scrollTop: 12,
+      jump: 0,
+      recoveryPending: true,
+    });
+    expect(virtual.afterMutation(token, { recoveryComplete: true })).toMatchObject({
+      recoveryPending: false,
+      scrollTop: 0,
+    });
+  });
   test("correction clamps at the scroll bounds", () => {
     const virtual = engine([10, 10], 10, 5);
     const result = mutate(virtual, () => virtual.measure("row-0", 0));
@@ -183,6 +259,103 @@ describe("anchoring", () => {
 });
 
 describe("bottom and scroll semantics", () => {
+  test("a scroll that changes the mounted range notifies", () => {
+    const virtual = engine(new Array(100).fill(10), 10, 0);
+    virtual.getSnapshot();
+    let notifications = 0;
+    virtual.subscribe(() => notifications++);
+    virtual.setViewport({ scrollTop: 500, size: 10, source: "user" });
+    expect(notifications).toBe(1);
+    expect(virtual.getSnapshot().range.start).toBeGreaterThan(0);
+  });
+  test("a viewport change that pins and clears unseen rows notifies", () => {
+    const virtual = engine([100, 100], 10, 0);
+    virtual.setOutline(items([100, 100, 100]).outline);
+    expect(virtual.getSnapshot()).toMatchObject({ pinned: false, unseenCount: 1 });
+    let notifications = 0;
+    virtual.subscribe(() => notifications++);
+    virtual.setViewport({ scrollTop: 290, size: 10, source: "user" });
+    expect(notifications).toBe(1);
+    expect(virtual.getSnapshot()).toMatchObject({ pinned: true, unseenCount: 0 });
+  });
+  test("an observed scroll moves the range without changing follow, unseen rows, or a pending correction", () => {
+    const unpinned = engine([100, 100], 10, 0);
+    unpinned.setOutline(items([100, 100, 100]).outline);
+    let notifications = 0;
+    unpinned.subscribe(() => notifications++);
+    unpinned.setViewport({ scrollTop: 290, size: 10, source: "observe" });
+    expect(notifications).toBe(1);
+    expect(unpinned.getSnapshot()).toMatchObject({ scrollTop: 290, visible: { start: 2, end: 3 }, pinned: false, unseenCount: 1 });
+
+    const pinned = engine([10, 10, 10], 10, 20);
+    pinned.setViewport({ scrollTop: 0, size: 10, source: "observe" });
+    expect(pinned.getSnapshot()).toMatchObject({ scrollTop: 0, visible: { start: 0, end: 1 }, pinned: true });
+
+    const corrected = engine([10, 10, 10], 10, 12);
+    const result = mutate(corrected, () => corrected.measure("row-0", 20));
+    corrected.setViewport({ scrollTop: 5, size: 10, source: "observe" });
+    corrected.setViewport({ scrollTop: result.scrollTop, size: 10, source: "user" });
+    expect(corrected.getSnapshot(), "an observation must not consume the expected correction").toMatchObject({ correctionEvent: true, pinned: false });
+  });
+  test("an observed scroll keeps a missing reader anchor owned", () => {
+    const outline = Array.from({ length: 20 }, (_, index) => ({ id: `row-${index}`, kind: "10" }));
+    const virtual = createVirtualizer({ estimateSize: Number, bottomThreshold: 0 });
+    virtual.setOutline(outline);
+    virtual.setLoaded("all");
+    virtual.setViewport({ scrollTop: 112, size: 10, source: "user" });
+    let token = { ...virtual.beforeMutation(), anchor: { id: "row-11", index: 11, offset: -2 } };
+    virtual.setOutline(outline.slice(12));
+    virtual.afterMutation(token, { recoveryComplete: false });
+    virtual.setViewport({ scrollTop: 30, size: 10, source: "observe" });
+    token = virtual.beforeMutation();
+    virtual.setOutline(outline);
+    virtual.afterMutation(token);
+    expect(virtual.getSnapshot().scrollTop, "the replayed anchor row must restore the reader position").toBe(112);
+  });
+  test("an unchanged observation does not notify", () => {
+    const virtual = engine(new Array(100).fill(10), 10, 500);
+    const snapshot = virtual.getSnapshot();
+    let notifications = 0;
+    virtual.subscribe(() => notifications++);
+    virtual.setViewport({ scrollTop: 500, size: 10, source: "observe" });
+    expect(notifications, "an observation that changes no range input must not re-render").toBe(0);
+    expect(virtual.getSnapshot()).toBe(snapshot);
+  });
+  test("an observation at the same position notifies when a range input changed, and content growth is current without it", () => {
+    const resized = engine(new Array(100).fill(10), 10, 500);
+    const before = resized.getSnapshot().range;
+    let notifications = 0;
+    resized.subscribe(() => notifications++);
+    resized.setViewport({ scrollTop: 500, size: 30, source: "observe" });
+    expect(notifications, "a viewport size change decides the range").toBe(1);
+    expect(resized.getSnapshot().range).not.toEqual(before);
+
+    // Content shrinks below the stored position; the same reported position clamps to the new end.
+    const shrunk = engine(new Array(100).fill(10), 10, 990);
+    shrunk.setOutline(items(new Array(50).fill(10)).outline);
+    const stale = shrunk.getSnapshot();
+    notifications = 0;
+    shrunk.subscribe(() => notifications++);
+    shrunk.setViewport({ scrollTop: 990, size: 10, source: "observe" });
+    expect(notifications, "a content size change that moves the clamped position decides the range").toBe(1);
+    expect(shrunk.getSnapshot()).toMatchObject({ scrollTop: 490, visible: { start: 49, end: 50 } });
+    expect(shrunk.getSnapshot().range).not.toEqual(stale.range);
+
+    // Content that grows at the same position notifies through measure(), so the snapshot is current before the
+    // observation; the observation then adds no second notification.
+    const grown = engine(new Array(100).fill(10), 10, 500);
+    notifications = 0;
+    grown.subscribe(() => notifications++);
+    grown.measure("row-50", 40);
+    expect(notifications, "the growth itself notifies").toBe(1);
+    const sizes = new Array(100).fill(10);
+    sizes[50] = 40;
+    const fresh = engine(sizes, 10, 500).getSnapshot();
+    expect(grown.getSnapshot()).toMatchObject({ totalSize: 1030, range: fresh.range, visible: fresh.visible, bottomSpacer: fresh.bottomSpacer });
+    grown.setViewport({ scrollTop: 500, size: 10, source: "observe" });
+    expect(notifications, "an observation after the growth adds no second notification").toBe(1);
+    expect(grown.getSnapshot()).toMatchObject({ totalSize: 1030, range: fresh.range, visible: fresh.visible });
+  });
   test("pinned append follows the new bottom", () => {
     const virtual = engine([10, 10], 10, 10);
     const token = virtual.beforeMutation();
@@ -199,11 +372,16 @@ describe("bottom and scroll semantics", () => {
     virtual.setOutline(items([100, 100, 100]).outline);
     expect(virtual.afterMutation(token)).toMatchObject({ followedBottom: false, scrollTop: 0 });
   });
-  test("programmatic scroll does not change pinned state", () => {
-    const virtual = engine([100, 100], 10, 0);
-    virtual.setViewport({ scrollTop: 190, size: 10, source: "programmatic" });
-    expect(virtual.getSnapshot().pinned).toBe(false);
-    expect(virtual.getSnapshot().programmatic).toBe(true);
+  test.each([
+    ["user", 1, true], ["user", 4, true], ["user", 4.01, false], ["user", 5, false],
+    ["programmatic", 1, true], ["programmatic", 4, true], ["programmatic", 4.01, false], ["programmatic", 5, false],
+  ] as const)("%s position %.2f px from the bottom sets follow to %s", (source, distance, following) => {
+    const virtual = createVirtualizer({ estimateSize: () => 100 });
+    virtual.setOutline(items([100, 100]).outline);
+    virtual.setLoaded("all");
+    virtual.setViewport({ scrollTop: 190 - distance, size: 10, source });
+    expect(virtual.getSnapshot().pinned).toBe(following);
+    expect(virtual.getSnapshot().unseenCount).toBe(0);
   });
   test("user scroll changes pinned state", () => {
     const virtual = engine([100, 100], 10, 0);
@@ -220,6 +398,14 @@ describe("bottom and scroll semantics", () => {
     const virtual = engine([10, 10, 10], 5, 0);
     expect(virtual.scrollToId("row-2")).toBe(20);
     expect(virtual.getSnapshot().programmatic).toBe(true);
+  });
+  test.each([[3, true], [5, false]] as const)("scrollToId %d px from the bottom sets follow to %s", (gap, following) => {
+    const virtual = createVirtualizer({ estimateSize: () => 100 });
+    virtual.setOutline(items([100, 100]).outline);
+    virtual.setLoaded("all");
+    virtual.setViewport({ scrollTop: 0, size: 10, source: "observe" });
+    virtual.scrollToId("row-1", gap - 90);
+    expect(virtual.getSnapshot().pinned).toBe(following);
   });
   test("deferred corrections accumulate until scroll end", () => {
     const virtual = engine([10, 10, 10], 10, 12);
@@ -248,6 +434,12 @@ describe("bottom and scroll semantics", () => {
     const virtual = engine([10, 10, 10], 10, 12);
     const result = mutate(virtual, () => virtual.measure("row-0", 20));
     virtual.setViewport({ scrollTop: result.scrollTop, size: 10, source: "user" });
+    expect(virtual.getSnapshot()).toMatchObject({ programmatic: true, correctionEvent: true, pinned: false });
+  });
+  test("a correction rounded to a device pixel is not user intent", () => {
+    const virtual = engine([10, 10, 10], 10, 12);
+    const result = mutate(virtual, () => virtual.measure("row-0", 20.5));
+    virtual.setViewport({ scrollTop: Math.round(result.scrollTop), size: 10, source: "user" });
     expect(virtual.getSnapshot()).toMatchObject({ programmatic: true, correctionEvent: true, pinned: false });
   });
   test("a later user scroll changes state normally", () => {
@@ -283,10 +475,10 @@ describe("bottom and scroll semantics", () => {
       expect(virtual.afterMutation(correction)).toMatchObject({ scrollTop: 30, jump: -20 });
       overlap(virtual);
       virtual.setViewport({ scrollTop: 30, size: 10, source: "user" });
-      expect(virtual.getSnapshot()).toMatchObject({ pinned: false, programmatic: true, correctionEvent: true });
+      expect(virtual.getSnapshot()).toMatchObject({ pinned: true, programmatic: true, correctionEvent: true });
       const append = virtual.beforeMutation();
       virtual.setOutline([...items([10, 30]).outline, { id: "row-2", kind: "10:2" }]);
-      expect(virtual.afterMutation(append)).toMatchObject({ followedBottom: false, scrollTop: 30 });
+      expect(virtual.afterMutation(append)).toMatchObject({ followedBottom: true, scrollTop: 40 });
     });
   }
   test("moves an expected correction with content and scroll-bound changes", () => {
@@ -328,7 +520,8 @@ describe("bottom and scroll semantics", () => {
         let lastUserPinned = false;
         if (event === 0) {
           virtual.setViewport({ scrollTop: 30, size: virtual.getSnapshot().viewportSize, source: "user" });
-          expect(virtual.getSnapshot()).toMatchObject({ correctionEvent: true, programmatic: true, pinned: false });
+          expect(virtual.getSnapshot()).toMatchObject({ correctionEvent: true, programmatic: true, pinned: true });
+          lastUserPinned = true;
         } else if (event === 1) {
           virtual.flushPendingCorrection();
           virtual.setViewport({ scrollTop: 30, size: virtual.getSnapshot().viewportSize, source: "user" });

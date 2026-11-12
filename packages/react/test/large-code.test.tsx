@@ -3,7 +3,7 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
 domShimAlarm(import.meta.path);
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -166,9 +166,98 @@ test("a colored cold-grammar result stays colored on the next streamed append", 
   expect(spans()).toBeGreaterThan(0);
 });
 
-test("a streaming fence over the limits follows its newest line", () => {
-  mount(<Markdown id="m" source={"```cpp\n" + line.repeat(300)} streaming highlight={highlight} />);
-  expect(container.querySelector('[data-part="text-viewer-position"]')!.textContent).toBe("at bottom");
+// A browser-like layout for one viewer: a row is as tall as its lines, the rows' overflow is the scroll height, scrollTop
+// clamps to the end, and the resize observer reports only rows whose size changed. A scrollTop write dirties layout,
+// so the first layout read after it is one forced layout.
+test("a streaming fence over the limits follows its newest line with one scroll write per append", () => {
+  const LINE = 21;
+  let count = false;
+  const writes: number[] = [];
+  let forcedLayouts = 0;
+  let dirty = false;
+  const descriptor = (name: "clientHeight" | "scrollHeight" | "scrollTop") => {
+    for (let target: object | null = HTMLElement.prototype; target; target = Object.getPrototypeOf(target)) {
+      const found = Object.getOwnPropertyDescriptor(target, name);
+      if (found) return found;
+    }
+    throw new Error(`${name} descriptor is missing`);
+  };
+  const read = <Value,>(value: Value) => {
+    if (count && dirty) forcedLayouts++;
+    dirty = false;
+    return value;
+  };
+  const isViewer = (element: HTMLElement) => element.dataset.part === "text-viewer";
+  const linesOf = (element: Element) => element.textContent!.split("\n").length - 1;
+  const contentHeight = (viewer: HTMLElement) => {
+    const content = viewer.querySelector<HTMLElement>('[data-part="text-viewer-content"]')!;
+    const rowBottoms = [...content.querySelectorAll<HTMLElement>('[data-part="text-viewer-row"]')]
+      .map((row) => Number(/translateY\(([\d.]+)px\)/.exec(row.style.transform)![1]) + linesOf(row) * LINE);
+    return Math.max(parseFloat(content.style.height) || 0, ...rowBottoms);
+  };
+  const clientHeight = descriptor("clientHeight");
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get(this: HTMLElement) { return read(clientHeight.get!.call(this)); } }));
+  const scrollHeight = descriptor("scrollHeight");
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get(this: HTMLElement) { return read(isViewer(this) ? contentHeight(this) : scrollHeight.get!.call(this)); } }));
+  const scrollTop = descriptor("scrollTop");
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get(this: HTMLElement) { return read(scrollTop.get!.call(this)); },
+    set(this: HTMLElement, value: number) {
+      if (count) writes.push(value);
+      dirty = true;
+      const end = isViewer(this) ? Math.max(0, contentHeight(this) - clientHeight.get!.call(this)) : value;
+      scrollTop.set!.call(this, Math.max(0, Math.min(value, end)));
+    },
+  }));
+  const rect = HTMLElement.prototype.getBoundingClientRect;
+  restoreShims.push(shimProperty(HTMLElement.prototype, "getBoundingClientRect", { configurable: true, value(this: HTMLElement) { return read(rect.call(this)); } }));
+  const observers: Array<{ callback: ResizeObserverCallback; observed: Set<Element> }> = [];
+  restoreShims.push(shimGlobal("ResizeObserver", class {
+    private record = { callback: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
+    constructor(callback: ResizeObserverCallback) { this.record.callback = callback; observers.push(this.record); }
+    observe(element: Element) { this.record.observed.add(element); }
+    unobserve(element: Element) { this.record.observed.delete(element); }
+    disconnect() { this.record.observed.clear(); }
+  } as unknown as typeof ResizeObserver));
+  const reported = new WeakMap<Element, number>();
+  // Like a browser frame: deliver resize entries until the mounted rows stop changing.
+  const measureRows = () => {
+    const rows = observers.find(({ observed }) => [...observed].some((element) => element.getAttribute("data-part") === "text-viewer-row"))!;
+    for (let round = 0; round < 10; round++) {
+      const changed = [...rows.observed].filter((target) => reported.get(target) !== linesOf(target) * LINE);
+      if (changed.length === 0) return;
+      for (const target of changed) reported.set(target, linesOf(target) * LINE);
+      const entries = changed.map((target) => ({ target, borderBoxSize: [{ blockSize: reported.get(target)! }] })) as unknown as ResizeObserverEntry[];
+      act(() => rows.callback(entries, {} as ResizeObserver));
+    }
+    throw new Error("rows kept resizing");
+  };
+
+  let source = "```cpp\n" + line.repeat(300);
+  mount(<Markdown id="m" source={source} streaming highlight={highlight} />);
+  const viewer = container.querySelector<HTMLElement>('[data-part="text-viewer"]')!;
+  const position = () => container.querySelector('[data-part="text-viewer-position"]')!.textContent;
+  const atEnd = () => Math.abs(viewer.scrollTop - (viewer.scrollHeight - viewer.clientHeight)) < 1;
+  measureRows();
+  expect(viewer.scrollTop, "a viewer that is live at mount must start following").toBeGreaterThan(0);
+  expect(position()).toBe("at bottom");
+  for (let append = 0; append < 3; append++) {
+    source += line;
+    writes.length = 0;
+    forcedLayouts = 0;
+    count = true;
+    act(() => root!.render(<Markdown id="m" source={source} streaming highlight={highlight} />));
+    measureRows();
+    count = false;
+    expect(atEnd(), "appending at the bottom must keep the newest line in view").toBe(true);
+    expect(position()).toBe("at bottom");
+    expect(writes.length, `one viewer append must write scrollTop at most once; wrote ${writes.join(", ")}`).toBeLessThanOrEqual(1);
+    expect(forcedLayouts, "one viewer append must force at most one layout after its scroll write").toBeLessThanOrEqual(1);
+  }
+  act(() => root!.render(<Markdown id="m" source={source + "```\n"} streaming highlight={highlight} />));
+  expect(atEnd(), "finishing at the bottom must preserve follow").toBe(true);
+  expect(position()).toBe("at bottom");
 });
 
 // Streaming answers at once; any other request (a viewer range, the whole block) stays pending, so only colors carried
@@ -245,4 +334,12 @@ test("a block over 10,000 lines (the highlighter answers it plain) keeps its ran
   mount(<Markdown id="m" source={"```json\n" + short + "```\n"} highlight={plainOver} />);
   await act(async () => {});
   expect(container.querySelector('[data-part="text-viewer-row"] .tok-keyword')).not.toBeNull();
+});
+
+test("a finished large fence opens at the top with its first row mounted", () => {
+  const first = "int first_marker = 1;\n";
+  mount(<Markdown id="finished" source={"```cpp\n" + first + large + "```\n"} highlight={highlight} />);
+  const viewer = container.querySelector<HTMLElement>('[data-part="text-viewer"]')!;
+  expect(viewer.scrollTop, "a finished viewer must not inherit the virtual engine's initial follow state").toBe(0);
+  expect(viewer.querySelector('[data-part="text-viewer-row"]')?.textContent, "the first row must be mounted for browser find").toContain(first.trim());
 });

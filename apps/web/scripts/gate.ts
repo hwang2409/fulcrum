@@ -12,7 +12,7 @@
 import { mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { chromium, webkit, type Locator, type Page } from "playwright";
+import { chromium, firefox, webkit, type Locator, type Page } from "playwright";
 import { themes } from "@fulcrum/react";
 import { ACTIVE, LONG, startFakeZeta } from "./fake-zeta";
 
@@ -86,6 +86,23 @@ function audit(minHeight: number) {
 }
 
 const settle = (page: Page) => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+const stableRowOffset = (page: Page, id: string, engine: string, phase: string) => page.evaluate(async ({ id, engine, phase }) => {
+  let prior: number | null = null;
+  let stable = 0;
+  const seen: string[] = [];
+  for (let frame = 0; frame < 240; frame++) {
+    await new Promise(requestAnimationFrame);
+    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
+    const row = document.querySelector<HTMLElement>(`[data-virtual-id="${CSS.escape(id)}"]`);
+    if (!scroll || !row) { prior = null; stable = 0; seen.push("unmounted"); continue; }
+    const offset = row.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+    seen.push(`${offset.toFixed(2)}@${scroll.scrollTop.toFixed(2)}/${(scroll.scrollHeight - scroll.clientHeight).toFixed(2)}`);
+    stable = prior !== null && Math.abs(offset - prior) < 0.1 ? stable + 1 : 0;
+    prior = offset;
+    if (stable >= 3) return offset;
+  }
+  throw new Error(`${engine}: ${id} did not settle ${phase}; last offsets (offset@scrollTop/range) ${seen.slice(-8).join(" ")}`);
+}, { id, engine, phase });
 const shoot = (page: Page, name: string) => page.screenshot({ path: join(shots, `${name}.png`) });
 const tokenReport = new Map<string, Set<string>>();
 async function auditThemes(page: Page, label: string, minHeight: number) {
@@ -100,6 +117,209 @@ async function auditThemes(page: Page, label: string, minHeight: number) {
 }
 
 const scrollGap = (page: Page) => page.locator('[data-part="timeline-scroll"]').evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+const reconnectBottomRuns = 5;
+const expectReconnectBottomFailure = process.env.WEB_GATE_EXPECT_RECONNECT_FAILURE === "1";
+const reconnectBottomFixtureCss = `
+[data-part="timeline"][data-virtual="true"] {
+  --fulcrum-gap: 12px;
+  box-sizing: content-box !important;
+  padding-block-end: 2px !important;
+}
+[data-part="timeline"][data-virtual="true"] :is([data-part="message"], [data-part="item"]) {
+  line-height: 24px !important;
+}
+[data-part="timeline"][data-virtual="true"] :is([data-part="md-paragraph"], [data-part="md-strong"], [data-part="md-code-inline"]) {
+  line-height: 23px !important;
+  border-block-width: 0 !important;
+}
+[data-part="timeline"][data-virtual="true"] [data-part="md-paragraph"] {
+  min-block-size: 24px;
+}`;
+
+type ReconnectBottomSample = {
+  phase: string;
+  frame: number;
+  time: number;
+  clientHeight: number;
+  clientWidth: number;
+  offsetWidth: number;
+  scrollHeight: number;
+  scrollTop: number;
+  domEnd: number;
+  engineTotal: number;
+  engineEnd: number;
+  engineTop: number;
+  pinned: boolean;
+  gap: number;
+  mounted: number;
+};
+
+type ReconnectBottomDiagnostic = {
+  engine: string;
+  run: number;
+  browser: string;
+  viewport: { width: number; height: number } | null;
+  deviceScaleFactor: number;
+  font: { status: string; ready: boolean; family: string; size: string; lineHeight: string };
+  fixture: { stylePresent: boolean; messageLineHeight: string; boxSizing: string; paddingBottom: string };
+  scrollbarWidth: number;
+  rows: { first: string | null; last: string | null; heights: Array<{ height: number; count: number }> };
+  history: { before: number; after: number; finalPageReceipts: number[] };
+  phases: ReconnectBottomSample[];
+  actions: Array<{ sequence: number; time: number; type: string }>;
+  ordering: string[];
+  assertionReached: boolean;
+  assertionGap: number | null;
+};
+
+type VirtualDebug = {
+  getSnapshot(): { totalSize: number; viewportSize: number; scrollTop: number; pinned: boolean };
+  getActions(): Array<{ sequence: number; time: number; type: string }>;
+};
+
+const reconnectBottomSample = (page: Page, phase: string, frame = 0) => page.evaluate(({ phase, frame }) => {
+  const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
+  const engine = (window as typeof window & { __fulcrumVirtual?: VirtualDebug }).__fulcrumVirtual;
+  if (!scroll || !engine) throw new Error("reconnect fixture is missing the virtual viewport or debug engine");
+  const snapshot = engine.getSnapshot();
+  const domEnd = scroll.scrollHeight - scroll.clientHeight;
+  return {
+    phase,
+    frame,
+    time: performance.now(),
+    clientHeight: scroll.clientHeight,
+    clientWidth: scroll.clientWidth,
+    offsetWidth: scroll.offsetWidth,
+    scrollHeight: scroll.scrollHeight,
+    scrollTop: scroll.scrollTop,
+    domEnd,
+    engineTotal: snapshot.totalSize,
+    engineEnd: Math.max(0, snapshot.totalSize - snapshot.viewportSize),
+    engineTop: snapshot.scrollTop,
+    pinned: snapshot.pinned,
+    gap: domEnd - scroll.scrollTop,
+    mounted: document.querySelectorAll('[data-part="timeline"] [data-virtual-id]').length,
+  };
+}, { phase, frame });
+
+const stableReconnectBottom = (page: Page, phase: string, targetDelta?: number) => page.evaluate(async ({ phase, targetDelta }) => {
+  const samples: ReconnectBottomSample[] = [];
+  let stableFrames = 0;
+  for (let frame = 1; frame <= 240; frame++) {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
+    const engine = (window as typeof window & { __fulcrumVirtual?: VirtualDebug }).__fulcrumVirtual;
+    if (!scroll || !engine || !document.querySelector('[data-virtual-id="message:l999"]')) continue;
+    const snapshot = engine.getSnapshot();
+    const sample: ReconnectBottomSample = {
+      phase,
+      frame,
+      time: performance.now(),
+      clientHeight: scroll.clientHeight,
+      clientWidth: scroll.clientWidth,
+      offsetWidth: scroll.offsetWidth,
+      scrollHeight: scroll.scrollHeight,
+      scrollTop: scroll.scrollTop,
+      domEnd: scroll.scrollHeight - scroll.clientHeight,
+      engineTotal: snapshot.totalSize,
+      engineEnd: Math.max(0, snapshot.totalSize - snapshot.viewportSize),
+      engineTop: snapshot.scrollTop,
+      pinned: snapshot.pinned,
+      gap: scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop,
+      mounted: document.querySelectorAll('[data-part="timeline"] [data-virtual-id]').length,
+    };
+    const prior = samples.at(-1);
+    const targetReached = targetDelta === undefined || Math.abs(sample.domEnd - sample.engineEnd - targetDelta) <= 0.01;
+    stableFrames = prior && prior.mounted === sample.mounted && Math.abs(prior.domEnd - sample.domEnd) < 0.01 && Math.abs(prior.engineEnd - sample.engineEnd) < 0.01 && targetReached ? stableFrames + 1 : 0;
+    samples.push(sample);
+    if (stableFrames >= 3) return samples;
+  }
+  throw new Error(`${phase} did not become stable${targetDelta === undefined ? "" : ` at a ${targetDelta.toFixed(3)} px DOM/engine delta`}`);
+}, { phase, targetDelta });
+
+const reconnectBottomContext = (page: Page) => page.evaluate(async () => {
+  await document.fonts.ready;
+  const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
+  const timeline = document.querySelector<HTMLElement>('[data-part="timeline"]');
+  const engine = (window as typeof window & { __fulcrumVirtual?: VirtualDebug }).__fulcrumVirtual;
+  if (!scroll || !timeline || !engine) throw new Error("reconnect fixture context is incomplete");
+  const style = getComputedStyle(timeline);
+  const rows = [...timeline.querySelectorAll<HTMLElement>('[data-virtual-id]')];
+  const heights = new Map<number, number>();
+  for (const row of rows) {
+    const height = Number(row.getBoundingClientRect().height.toFixed(3));
+    heights.set(height, (heights.get(height) ?? 0) + 1);
+  }
+  const message = timeline.querySelector<HTMLElement>('[data-part="message"]');
+  return {
+    font: {
+      status: document.fonts.status,
+      ready: document.fonts.check('14px "JetBrains Mono"'),
+      family: style.fontFamily,
+      size: style.fontSize,
+      lineHeight: style.lineHeight,
+    },
+    fixture: {
+      stylePresent: !!document.querySelector("#timeline-integer-reconnect-fixture"),
+      messageLineHeight: message ? getComputedStyle(message).lineHeight : "missing",
+      boxSizing: style.boxSizing,
+      paddingBottom: style.paddingBottom,
+    },
+    scrollbarWidth: scroll.offsetWidth - scroll.clientWidth,
+    rows: {
+      first: rows[0]?.dataset.virtualId ?? null,
+      last: rows.at(-1)?.dataset.virtualId ?? null,
+      heights: [...heights].map(([height, count]) => ({ height, count })),
+    },
+    actions: engine.getActions().slice(-40).map(({ sequence, time, type }) => ({ sequence, time, type })),
+  };
+});
+
+const installReconnectBottomFixture = (page: Page) => page.addInitScript((css) => {
+  const style = document.createElement("style");
+  style.id = "timeline-integer-reconnect-fixture";
+  style.textContent = css;
+  const install = () => {
+    if (!style.isConnected && document.documentElement) document.documentElement.append(style);
+  };
+  install();
+  // The HTML parser can replace the early document element after an init script runs.
+  const observer = new MutationObserver(() => {
+    install();
+    if (document.head && style.isConnected) observer.disconnect();
+  });
+  observer.observe(document, { childList: true, subtree: true });
+}, reconnectBottomFixtureCss);
+
+const assertReconnectBottomFixture = (
+  engine: string,
+  run: number,
+  phase: string,
+  sample: ReconnectBottomSample,
+  context: Awaited<ReturnType<typeof reconnectBottomContext>>,
+) => {
+  const heights = context.rows.heights.map(({ height }) => height).sort((a, b) => a - b);
+  const fixture = { ...context.fixture, heights, totalSize: sample.engineTotal, scrollHeight: sample.scrollHeight, delta: sample.domEnd - sample.engineEnd };
+  if (!context.fixture.stylePresent) throw new Error(`${engine} reconnect-bottom run ${run}: ${phase} fixture style marker is missing`);
+  if (context.fixture.messageLineHeight !== "24px" || context.fixture.boxSizing !== "content-box" || context.fixture.paddingBottom !== "2px") {
+    throw new Error(`${engine} reconnect-bottom run ${run}: ${phase} fixture style did not apply (${JSON.stringify(fixture)})`);
+  }
+  if (JSON.stringify(heights) !== JSON.stringify([36, 52])) {
+    throw new Error(`${engine} reconnect-bottom run ${run}: ${phase} row heights are not 36/52 (${JSON.stringify(fixture)})`);
+  }
+  if (!Number.isInteger(sample.engineTotal)) {
+    throw new Error(`${engine} reconnect-bottom run ${run}: ${phase} engine total is not integral (${JSON.stringify(fixture)})`);
+  }
+  if (sample.scrollHeight - sample.engineTotal !== 26 || sample.domEnd - sample.engineEnd !== 18) {
+    throw new Error(`${engine} reconnect-bottom run ${run}: ${phase} fixture did not add the 16 px virtual gutter plus its 2 px probe (${JSON.stringify(fixture)})`);
+  }
+};
+
+class ReconnectBottomFailure extends Error {
+  constructor(readonly gap: number, readonly engineGap: number) {
+    super(`a pinned reader is ${gap.toFixed(3)} px from the DOM bottom after reconnect (engine gap ${engineGap.toFixed(3)} px)`);
+  }
+}
 
 async function reconnectApprovalScenario(page: Page, fake: Awaited<ReturnType<typeof startFakeZeta>>) {
   await page.locator('[data-tool-view="shell"]').first().waitFor({ timeout: 5000 });
@@ -192,12 +412,17 @@ async function reconnectSnapshotScenario(page: Page, fake: Awaited<ReturnType<ty
 
 async function growPinnedRow(page: Page) {
   const scroll = page.locator('[data-part="timeline-scroll"]');
-  await page.evaluate(() => {
-    const engine = (window as typeof window & { __fulcrumVirtual?: { scrollToEnd(): number } }).__fulcrumVirtual;
-    if (!engine) throw new Error("no virtualizer debug handle");
-    document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.scrollTop = engine.scrollToEnd();
-  });
+  await scroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
   await settle(page);
+  const ready = await page.evaluate(() => {
+    const host = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+    return {
+      pinned: (window as typeof window & { __fulcrumVirtual?: VirtualDebug }).__fulcrumVirtual?.getSnapshot().pinned,
+      gap: host.scrollHeight - host.clientHeight - host.scrollTop,
+      jump: document.querySelector('[data-part="jump-to-latest"]') !== null,
+    };
+  });
+  if (!ready.pinned || ready.gap > 4 || ready.jump) throw new Error(`growth setup did not enter follow: pinned=${ready.pinned}, gap=${Math.round(ready.gap)}, jump=${ready.jump}`);
   const row = page.locator('[data-part="timeline"] [data-virtual-id]').last();
   const before = await row.boundingBox();
   if (!before) throw new Error("no measured row");
@@ -259,8 +484,9 @@ async function runStoppedSteerFollowScenario(page: Page, clearSent: () => void) 
 }
 
 async function jumpGeometry(page: Page) {
-  const button = page.locator('[data-part="jump-to-latest"]');
-  return button.evaluate((element) => {
+  return page.evaluate(() => {
+    // The library's control when it shows; WebKit's stand-in only when it does not.
+    const element = document.querySelector<HTMLElement>('[data-part="jump-to-latest"]:not([data-gate-stand-in])') ?? document.querySelector<HTMLElement>('[data-part="jump-to-latest"]')!;
     const style = getComputedStyle(element);
     const rect = element.getBoundingClientRect();
     const rgb = (value: string) => {
@@ -291,6 +517,7 @@ async function ensureJumpControl(lane: Locator, forceControl: boolean) {
     if (element.querySelector('[data-part="jump-to-latest"]')) return;
     const button = document.createElement("button");
     button.dataset.part = "jump-to-latest";
+    button.dataset.gateStandIn = "true";
     button.textContent = "jump to latest (1)";
     element.append(button);
   });
@@ -314,10 +541,15 @@ async function checkJumpWidth(page: Page, engine: string, width: number, makeUns
   await settle(page);
   makeUnseen();
   await ensureJumpControl(lane, forceControl);
-  await page.locator('[data-part="jump-to-latest"]').waitFor({ timeout: 15_000 }).catch(() => { throw new Error(`${engine} ${width}: jump control did not appear`); });
-  const laneAfter = await lane.boundingBox();
-  if (!laneBefore || !laneAfter || Math.abs(laneBefore.height - laneAfter.height) > .5) throw new Error(`${engine} ${width}: lane shifted while the control toggled`);
-  for (const theme of themes) await checkJumpTheme(page, engine, width, theme);
+  try {
+    await page.locator('[data-part="jump-to-latest"]').first().waitFor({ timeout: 15_000 }).catch(() => { throw new Error(`${engine} ${width}: jump control did not appear`); });
+    const laneAfter = await lane.boundingBox();
+    if (!laneBefore || !laneAfter || Math.abs(laneBefore.height - laneAfter.height) > .5) throw new Error(`${engine} ${width}: lane shifted while the control toggled`);
+    for (const theme of themes) await checkJumpTheme(page, engine, width, theme);
+  } finally {
+    // The stand-in is the gate's node inside React's lane; remove it so no later width or check sees it.
+    await lane.evaluate((element) => element.querySelector("[data-gate-stand-in]")?.remove());
+  }
 }
 
 async function checkJumpPlacement(page: Page, engine: string, makeUnseen: () => void, navigate = false, forceControl = false, widths = [1440, 390]) {
@@ -327,6 +559,512 @@ async function checkJumpPlacement(page: Page, engine: string, makeUnseen: () => 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.evaluate(() => { document.documentElement.dataset.fulcrumTheme = "tokyo-night"; });
   await settle(page);
+}
+
+// Restores the fake state this check changes (LONG's durable echoes, a stopped server) even when it fails.
+async function checkReconnectAnchor(page: Page, engine: string) {
+  const history = fake.historyOf(LONG);
+  try {
+    await reconnectAnchorScenario(page, engine);
+  } finally {
+    fake.restoreHistory(LONG, history);
+  }
+}
+
+// Stops and restarts the fake server, reconnects through the real retry button, and waits for replacement history.
+async function reconnectFake(page: Page, engine: string) {
+  const historiesBefore = fake.requests.filter(({ method }) => method === "session_history").length;
+  await fake.stop();
+  try {
+    await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5_000 });
+  } finally {
+    await fake.start();
+  }
+  await page.getByRole("button", { name: "retry now" }).click();
+  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 }).catch(async () => {
+    throw new Error(`${engine}: no healthy reconnect; badge is "${await page.locator(".badge").textContent().catch(() => "missing")}"`);
+  });
+  for (let attempt = 0; ; attempt++) {
+    if (fake.requests.filter(({ method }) => method === "session_history").length > historiesBefore) break;
+    if (attempt === 150) throw new Error(`${engine}: reconnect did not request replacement history`);
+    await Bun.sleep(100);
+  }
+}
+
+const waitAtBottom = (page: Page, failure: string) => page.waitForFunction((selector) => {
+  const element = document.querySelector<HTMLElement>(selector);
+  if (!element) return false;
+  const range = element.scrollHeight - element.clientHeight;
+  return range > 0 && Math.abs(element.scrollTop - range) <= 1;
+}, '[data-part="timeline-scroll"]', { timeout: 15_000 }).catch(() => { throw new Error(failure); });
+
+async function reconnectBottomIteration(page: Page, engine: string, run: number) {
+  const historyBefore = fake.historyOf(LONG);
+  const historiesBefore = fake.requests.filter(({ method }) => method === "session_history").length;
+  const phases: ReconnectBottomSample[] = [];
+  let assertionReached = false;
+  let assertionGap: number | null = null;
+  try {
+    await page.goto("about:blank");
+    await page.goto(`${origin}/?theme=tokyo-night&virtualDebug=1#session=${LONG}`);
+    await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+    await page.locator('[data-virtual-id="message:l999"]').waitFor({ timeout: 15_000 });
+    try {
+      await waitAtBottom(page, `${engine} reconnect-bottom run ${run}: the long run did not load pinned at the bottom`);
+    } catch (error) {
+      const load = await reconnectBottomSample(page, "load-bottom");
+      console.log(`reconnect-bottom-load ${JSON.stringify({ engine, run, ...load })}`);
+      if (load.pinned && Math.abs(load.gap) > 0.5) throw new ReconnectBottomFailure(load.gap, load.scrollTop - load.engineEnd);
+      throw error;
+    }
+    const initial = await stableReconnectBottom(page, "initial");
+    phases.push(initial.at(-1)!);
+    const before = phases.at(-1)!;
+    console.log(`reconnect-bottom-load ${JSON.stringify({ engine, run, ...before })}`);
+    if (!before.pinned) throw new Error(`${engine} reconnect-bottom run ${run}: engine was not pinned before reconnect`);
+    if (Math.abs(before.gap) > 0.5) throw new ReconnectBottomFailure(before.gap, before.scrollTop - before.engineEnd);
+    if (await page.locator('[data-part="jump-to-latest"]').count()) throw new Error(`${engine} reconnect-bottom run ${run}: jump control was present before reconnect`);
+    const contextBefore = await reconnectBottomContext(page);
+    assertReconnectBottomFixture(engine, run, "initial", before, contextBefore);
+    if (contextBefore.font.status !== "loaded" || !contextBefore.font.ready || !contextBefore.font.family.includes("JetBrains Mono")) {
+      throw new Error(`${engine} reconnect-bottom run ${run}: JetBrains Mono was not ready (${JSON.stringify(contextBefore.font)})`);
+    }
+    if (![before.domEnd, before.engineEnd].every((value) => Number.isFinite(value) && value > 0)) {
+      throw new Error(`${engine} reconnect-bottom run ${run}: invalid DOM/engine ends ${before.domEnd}/${before.engineEnd}`);
+    }
+
+    phases.push(await reconnectBottomSample(page, "reconnect-start"));
+    await reconnectFake(page, engine);
+    phases.push(await reconnectBottomSample(page, "connected"));
+    await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+    await page.locator('[data-virtual-id="message:l999"]').waitFor({ timeout: 15_000 });
+    phases.push(await reconnectBottomSample(page, "final-append"));
+
+    const stable = await stableReconnectBottom(page, "measurement-raf");
+    phases.push(...stable.slice(0, 1), ...stable.slice(-2, -1));
+    phases.push(await reconnectBottomSample(page, "final", stable.at(-1)!.frame));
+    const final = phases.at(-1)!;
+    const contextAfter = await reconnectBottomContext(page);
+    assertReconnectBottomFixture(engine, run, "final", final, contextAfter);
+    const historiesAfter = fake.requests.filter(({ method }) => method === "session_history");
+    const diagnostic: ReconnectBottomDiagnostic = {
+      engine,
+      run,
+      browser: await page.context().browser()!.version(),
+      viewport: page.viewportSize(),
+      deviceScaleFactor: await page.evaluate(() => devicePixelRatio),
+      font: contextAfter.font,
+      fixture: contextAfter.fixture,
+      scrollbarWidth: contextAfter.scrollbarWidth,
+      rows: contextAfter.rows,
+      history: {
+        before: historiesBefore,
+        after: historiesAfter.length,
+        finalPageReceipts: historiesAfter.slice(historiesBefore).map(({ replied }) => replied ?? -1),
+      },
+      phases,
+      actions: contextAfter.actions,
+      ordering: ["reconnect-start", "connected", "final-append", "resize-callback", "measurement-raf", "final"],
+      assertionReached: true,
+      assertionGap: final.gap,
+    };
+    assertionReached = true;
+    assertionGap = final.gap;
+    console.log(`reconnect-bottom ${JSON.stringify(diagnostic)}`);
+    if (Math.abs(final.domEnd - final.engineEnd - 18) > 0.01) {
+      throw new Error(`${engine} reconnect-bottom run ${run}: final DOM/engine disagreement is ${(final.domEnd - final.engineEnd).toFixed(3)} px`);
+    }
+    if (!final.pinned || await page.locator('[data-part="jump-to-latest"]').count()) {
+      throw new Error(`${engine} reconnect-bottom run ${run}: follow intent was not preserved`);
+    }
+    if (Math.abs(final.gap) > 0.5) throw new ReconnectBottomFailure(final.gap, final.scrollTop - final.engineEnd);
+  } catch (error) {
+    if (assertionReached) await shoot(page, `reconnect-bottom-${engine}-${run}`).catch(() => undefined);
+    throw error;
+  } finally {
+    fake.restoreHistory(LONG, historyBefore);
+    await fake.start();
+    if (!assertionReached && assertionGap !== null) console.log(`${engine} reconnect-bottom run ${run} stopped at gap ${assertionGap.toFixed(3)} px`);
+  }
+}
+
+// Opens a fresh context for one gate row and closes it even when the row fails, so a failed row cannot leave a page,
+// focus, or controller socket behind for the next row. The caller's page leaves first: zeta admits one controller.
+async function withRowPage(page: Page, engine: string, row: (rowPage: Page) => Promise<void>, prepare?: (rowPage: Page) => Promise<void>) {
+  const browser = page.context().browser();
+  if (!browser) throw new Error(`${engine}: gate row browser is unavailable`);
+  const viewport = page.viewportSize() ?? { width: 1440, height: 900 };
+  await page.goto("about:blank");
+  const context = await browser.newContext({ viewport });
+  try {
+    const rowPage = await context.newPage();
+    await prepare?.(rowPage);
+    await row(rowPage);
+  } finally {
+    await context.close();
+  }
+}
+
+async function checkReconnectBottom(page: Page, engine: string) {
+  const failures: ReconnectBottomFailure[] = [];
+  for (let run = 1; run <= reconnectBottomRuns; run++) {
+    try {
+      await withRowPage(page, engine, (rowPage) => reconnectBottomIteration(rowPage, engine, run), installReconnectBottomFixture);
+    } catch (error) {
+      if (!expectReconnectBottomFailure || !(error instanceof ReconnectBottomFailure)) throw error;
+      failures.push(error);
+      console.log(`expected reconnect-bottom failure ${engine} ${run}/${reconnectBottomRuns}: ${error.message}`);
+    }
+  }
+  if (expectReconnectBottomFailure) {
+    if (failures.length !== reconnectBottomRuns) throw new Error(`${engine}: only ${failures.length}/${reconnectBottomRuns} old-source runs reached the reconnect-bottom failure`);
+    throw new Error(`${engine}: deterministic old-source proof failed ${failures.length}/${reconnectBottomRuns} at ${failures.map(({ gap }) => gap.toFixed(3)).join(",")} px`);
+  }
+}
+
+// A wait whose timeout names what did not happen.
+const waitNamed = (locator: Locator, failure: string, timeout: number, state: "attached" | "detached" | "visible" = "visible") =>
+  locator.waitFor({ state, timeout }).catch(() => { throw new Error(`${failure} within ${timeout / 1000} s`); });
+
+// Review 4 B1: browsers animate key scrolls, so one reader gesture reaches the end over several scroll callbacks. A
+// reader who scrolls down to the end with real input follows again. The row first proves the gesture took more than one
+// callback, so it cannot pass on an engine that did not animate it. Real input only, named waits. Headless wheel input
+// does not animate (one callback in Chromium and WebKit), so the wheel case lives in the hook rows. "PageDown (body
+// focus)" clicks a row and then moves focus to the page body: the browser scrolls the scroller of the last click.
+// WebKit's End from a focused row does not end at the end of a virtual list (probe: it lands on the DOM end of that
+// moment, then rows measure and the end moves; focus also leaves the row), so WebKit presses PageDown until the end
+// instead. WebKit's later PageDowns from a focused row move less than a page (probe: 638 px, then 241 px, on 110b875
+// and on this branch alike), so the row repeats the key, up to five times, and counts the callbacks of the last press.
+type AnimatedGesture = "PageDown" | "End" | "PageDown repeated" | "PageDown (body focus)";
+
+// A freshly launched engine loads the app cold (module graph, fonts, the first history pages). Open the long run once,
+// in a row context like the rows use, before the first row. These rows are new: their load waits are 30 s, since Firefox
+// loads the 1,000-row run slowly on a busy machine.
+async function warmEngine(page: Page, engine: string) {
+  const history = fake.historyOf(LONG);
+  try {
+    await withRowPage(page, engine, async (rowPage) => {
+      await rowPage.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
+      await waitNamed(rowPage.locator('[data-run-ready="true"]'), `${engine}: warm-up: the long run was not ready`, 30_000);
+      await waitNamed(rowPage.getByText(/loading session history/), `${engine}: warm-up: history paging did not finish`, 30_000, "detached");
+    });
+  } finally {
+    fake.restoreHistory(LONG, history);
+  }
+}
+
+async function checkAnimatedReaderScrollRepins(page: Page, engine: string, gesture: AnimatedGesture) {
+  const history = fake.historyOf(LONG);
+  try {
+    await withRowPage(page, engine, async (rowPage) => {
+      const row = `${engine} animated ${gesture} re-pin`;
+      await rowPage.goto(`${origin}/?theme=tokyo-night&virtualDebug=1#session=${LONG}`);
+      await waitNamed(rowPage.locator('[data-run-ready="true"]'), `${row}: the long run was not ready`, 30_000);
+      await waitNamed(rowPage.getByText(/loading session history/), `${row}: history paging did not finish`, 30_000, "detached");
+      await waitNamed(rowPage.locator('[data-virtual-id="message:l999"]'), `${row}: the last history row message:l999 did not mount`, 30_000);
+      await waitAtBottom(rowPage, `${row}: the long run did not load pinned at the bottom`);
+
+      // Leave the bottom with real input: the pointer over the timeline, wheel up (less than a page for PageDown).
+      const scroll = rowPage.locator('[data-part="timeline-scroll"]');
+      const box = await scroll.boundingBox();
+      if (!box) throw new Error(`${row}: no scroll viewport`);
+      await rowPage.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      const wheelDelta = -(gesture === "End" ? 2 : gesture === "PageDown repeated" ? 1.5 : 0.5) * box.height;
+      let leftBottom = false;
+      for (let attempt = 1; attempt <= 5 && !leftBottom; attempt++) {
+        await rowPage.mouse.wheel(0, wheelDelta);
+        leftBottom = await rowPage.waitForFunction(() => {
+          const element = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+          return element.scrollHeight - element.clientHeight - element.scrollTop > 4;
+        }, undefined, { timeout: 2_000 }).then(() => true, () => false);
+      }
+      if (!leftBottom) throw new Error(`${row}: five wheel steps did not move the reader more than 4 px from the bottom`);
+      fake.emit({ event: "user_message", session_id: LONG, text: `animated ${engine} ${gesture} away`, mode: "send", attachments: [], delivery_id: `animated-away-${engine}-${gesture}` });
+      await waitNamed(rowPage.locator('[data-part="jump-to-latest"][data-unseen-count="1"]'), `${row}: the detached reader did not show one unseen row`, 10_000);
+      const settled = () => rowPage.evaluate(async () => {
+        const w = window as typeof window & { __animatedScrolls?: number };
+        let seen = -1;
+        while (seen !== w.__animatedScrolls) {
+          seen = w.__animatedScrolls ?? 0;
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        }
+      });
+      await rowPage.evaluate(() => {
+        const w = window as typeof window & { __animatedScrolls?: number };
+        w.__animatedScrolls = 0;
+        document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.addEventListener("scroll", () => { w.__animatedScrolls!++; });
+      });
+      await settled(); // the wheel-up animation finishes before the counted gesture starts
+      await rowPage.evaluate(() => { (window as typeof window & { __animatedScrolls?: number }).__animatedScrolls = 0; });
+
+      {
+        // A click on a visible row focuses it; rows handle only arrows, so the browser scrolls the timeline for this key.
+        const visibleRow = await rowPage.evaluate(() => {
+          const bounds = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.getBoundingClientRect();
+          const row = [...document.querySelectorAll<HTMLElement>("[data-virtual-id]")].find((element) => {
+            const box = element.getBoundingClientRect();
+            return box.top > bounds.top + 40 && box.bottom < bounds.bottom - 40 && box.height > 20;
+          });
+          if (!row) return null;
+          const box = row.getBoundingClientRect();
+          return { x: box.left + 8, y: box.top + box.height / 2 };
+        });
+        if (!visibleRow) throw new Error(`${row}: no fully visible row to focus`);
+        await rowPage.mouse.click(visibleRow.x, visibleRow.y);
+        await settled();
+        await rowPage.evaluate(() => { (window as typeof window & { __animatedScrolls?: number }).__animatedScrolls = 0; });
+        if (gesture === "PageDown (body focus)") await rowPage.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+        if (gesture === "PageDown repeated") {
+          const gap = () => scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+          for (let press = 1; press <= 5 && await gap() > 1; press++) {
+            await rowPage.evaluate(() => { (window as typeof window & { __animatedScrolls?: number }).__animatedScrolls = 0; });
+            await rowPage.keyboard.press("PageDown");
+            await settled();
+          }
+        } else await rowPage.keyboard.press(gesture === "End" ? "End" : "PageDown");
+      }
+      await rowPage.waitForFunction(() => {
+        const element = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+        return element.scrollHeight - element.clientHeight - element.scrollTop <= 1;
+      }, undefined, { timeout: 5_000 }).catch(() => { throw new Error(`${row}: the gesture did not reach the end within 5 s`); });
+      await settled();
+      const callbacks = await rowPage.evaluate(() => (window as typeof window & { __animatedScrolls?: number }).__animatedScrolls ?? 0);
+      console.log(`animated ${engine.padEnd(15)} ${gesture.padEnd(8)} ${callbacks} scroll callbacks`);
+      if (callbacks < 2) throw new Error(`${row}: the gesture took ${callbacks} scroll callback(s); it was not animated, so this row proves nothing`);
+
+      const text = `animated ${engine} ${gesture} append`;
+      fake.emit({ event: "user_message", session_id: LONG, text, mode: "send", attachments: [], delivery_id: `animated-${engine}-${gesture}` });
+      await waitNamed(rowPage.locator('[data-part="timeline"] [data-kind="user"]', { hasText: text }), `${row}: the appended row did not mount`, 5_000, "attached");
+      await settled();
+      const after = await rowPage.evaluate(() => {
+        const element = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+        const engine = (window as typeof window & { __fulcrumVirtual?: { getSnapshot(): { pinned: boolean } } }).__fulcrumVirtual;
+        return { gap: element.scrollHeight - element.clientHeight - element.scrollTop, following: engine?.getSnapshot().pinned ?? null, jump: !!document.querySelector('[data-part="jump-to-latest"]') };
+      });
+      if (after.following !== true || after.jump || after.gap > 1) {
+        throw new Error(`${row}: a reader who scrolled down to the end (${callbacks} callbacks) did not follow (follow ${after.following}, jump control ${after.jump ? "shown" : "hidden"}, gap ${after.gap.toFixed(3)} px)`);
+      }
+    });
+  } finally {
+    fake.restoreHistory(LONG, history);
+  }
+}
+
+// Restores LONG's history (the row appends to it) even when the row fails; the row runs in its own context.
+type ExternalScrollKind = "scrollIntoView" | "tab-focus" | "host-write-after-growth";
+
+async function checkExternalScrollIntent(page: Page, engine: string, kind: ExternalScrollKind) {
+  const history = fake.historyOf(LONG);
+  try {
+    await withRowPage(page, engine, (rowPage) => externalScrollIntentRow(rowPage, engine, kind));
+  } finally {
+    fake.restoreHistory(LONG, history);
+  }
+}
+
+async function externalScrollIntentRow(page: Page, engine: string, kind: ExternalScrollKind) {
+  const row = `${engine} ${kind} row`;
+  await page.goto(`${origin}/?theme=tokyo-night&virtualDebug=1#session=${LONG}`);
+  await waitNamed(page.locator('[data-run-ready="true"]'), `${row}: the long run was not ready`, 15_000);
+  await waitNamed(page.getByText(/loading session history/), `${row}: history paging did not finish`, 15_000, "detached");
+  await waitNamed(page.locator('[data-virtual-id="message:l999"]'), `${row}: the last history row message:l999 did not mount`, 15_000);
+  await waitAtBottom(page, `${engine} ${kind}: the long run did not load pinned at the bottom`);
+  const targetId = await page.evaluate(() => {
+    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
+    if (!scroll) throw new Error("timeline scroll host is missing");
+    const scrollBox = scroll.getBoundingClientRect();
+    const targets = [...document.querySelectorAll<HTMLElement>("[data-virtual-id]")]
+      .filter((row) => row.getBoundingClientRect().bottom < scrollBox.top - 1);
+    const target = targets[0];
+    if (!target?.dataset.virtualId) throw new Error("no mounted overscan row above the viewport");
+    const targetStart = target.getBoundingClientRect().top - scrollBox.top + scroll.scrollTop;
+    const distanceFromEnd = scroll.scrollHeight - targetStart;
+    if (distanceFromEnd <= 2 * scroll.clientHeight) {
+      throw new Error(`mounted target is only ${distanceFromEnd.toFixed(1)} px from the DOM end; need more than two ${scroll.clientHeight.toFixed(1)} px viewports`);
+    }
+    return target.dataset.virtualId;
+  });
+  const target = page.locator(`[data-virtual-id="${targetId}"]`);
+  const readPosition = () => page.evaluate(() => {
+    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+    const engine = (window as typeof window & { __fulcrumVirtual?: { getSnapshot(): { pinned: boolean } } }).__fulcrumVirtual;
+    return { gap: scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop, viewport: scroll.clientHeight, following: engine?.getSnapshot().pinned ?? null };
+  });
+  let moved;
+  if (kind !== "tab-focus") {
+    moved = await target.evaluate((element) => {
+      element.scrollIntoView({ block: "center" });
+      const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+      const engine = (window as typeof window & { __fulcrumVirtual?: { getSnapshot(): { pinned: boolean } } }).__fulcrumVirtual;
+      return { gap: scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop, viewport: scroll.clientHeight, following: engine?.getSnapshot().pinned ?? null };
+    });
+  } else {
+    await page.evaluate((id) => {
+      const target = document.querySelector<HTMLElement>(`[data-virtual-id="${id}"]`)!;
+      target.tabIndex = 2;
+      const sentinel = document.createElement("button");
+      sentinel.dataset.gateFocusSentinel = "true";
+      sentinel.tabIndex = 1;
+      sentinel.style.position = "fixed";
+      sentinel.style.inset = "auto 0 0 auto";
+      sentinel.textContent = "focus start";
+      document.body.append(sentinel);
+      sentinel.focus();
+    }, targetId);
+    await page.keyboard.press("Tab");
+    if (!await target.evaluate((element) => document.activeElement === element)) {
+      throw new Error(`${engine} tab-focus: Tab did not focus ${targetId}`);
+    }
+    moved = await readPosition();
+  }
+  if (moved.gap <= moved.viewport) {
+    throw new Error(`${engine} ${kind}: move check snapped back (gap ${moved.gap.toFixed(3)} px, viewport ${moved.viewport.toFixed(3)} px, follow ${moved.following})`);
+  }
+  const appendText = `${kind} ${engine} append`;
+  fake.emit({ event: "user_message", session_id: LONG, text: appendText, mode: "send", attachments: [], delivery_id: `${kind}-${engine}-append` });
+  // The append signal is public UI: virtualization need not mount the new row for a reader scrolled into content.
+  // A snap back re-pins the reader and so also hides the control; the no-snap check reports that cause first.
+  const appended = waitNamed(page.locator('[data-part="jump-to-latest"][data-unseen-count="1"]'), `${row}: jump control with unseen=1 did not appear after the append`, 5_000);
+  const signal = await appended.then(() => null, (error: Error) => error);
+  const after = await readPosition();
+  if (after.gap < moved.gap - 1 || after.following !== false) {
+    throw new Error(`${engine} ${kind}: no-snap check failed (moved gap ${moved.gap.toFixed(3)} px, after gap ${after.gap.toFixed(3)} px, follow ${after.following}, jump control ${signal ? "missing" : "shown"})`);
+  }
+  if (signal) throw signal;
+  if (kind === "host-write-after-growth") await hostWriteAfterGrowth(page, engine, row);
+}
+
+// A scroll key typed in the composer edits the draft; it must not turn off a pinned timeline's follow.
+async function checkComposerKeyKeepsFollow(page: Page, engine: string) {
+  const history = fake.historyOf(LONG);
+  try {
+    await withRowPage(page, engine, async (rowPage) => {
+      const row = `${engine} composer-key row`;
+      await rowPage.goto(`${origin}/?theme=tokyo-night&virtualDebug=1#session=${LONG}`);
+      await waitNamed(rowPage.locator('[data-run-ready="true"]'), `${row}: the long run was not ready`, 15_000);
+      await waitNamed(rowPage.getByText(/loading session history/), `${row}: history paging did not finish`, 15_000, "detached");
+      await waitNamed(rowPage.locator('[data-virtual-id="message:l999"]'), `${row}: the last history row message:l999 did not mount`, 15_000);
+      await waitAtBottom(rowPage, `${row}: the long run did not load pinned at the bottom`);
+      const composer = rowPage.locator(".dock textarea");
+      await composer.fill("line one\nline two");
+      await composer.focus();
+      for (const key of ["ArrowUp", "PageUp", "Home"]) await rowPage.keyboard.press(key);
+      const text = `composer key ${engine} append`;
+      fake.emit({ event: "user_message", session_id: LONG, text, mode: "send", attachments: [], delivery_id: `composer-key-${engine}` });
+      await waitNamed(rowPage.locator('[data-part="timeline"] [data-kind="user"]', { hasText: text }), `${row}: the appended row did not mount at the bottom`, 5_000);
+      const after = await rowPage.evaluate(() => {
+        const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+        const engine = (window as typeof window & { __fulcrumVirtual?: { getSnapshot(): { pinned: boolean } } }).__fulcrumVirtual;
+        return { gap: scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop, following: engine?.getSnapshot().pinned ?? null, jump: !!document.querySelector('[data-part="jump-to-latest"]') };
+      });
+      if (after.following !== true || after.jump || after.gap > 1) {
+        throw new Error(`${row}: composer keys changed follow (follow ${after.following}, jump control ${after.jump ? "shown" : "hidden"}, gap ${after.gap.toFixed(3)} px)`);
+      }
+    });
+  } finally {
+    fake.restoreHistory(LONG, history);
+  }
+}
+
+// Host writes (as gamma's jump and focus code does), not reader input: after the run grows past the mounted window
+// below an unpinned reader, a host move near or to the new end must mount rows under the viewport. A settled position
+// at the end resumes follow; a position 10 px above the end does not.
+async function hostWriteAfterGrowth(page: Page, engine: string, row: string) {
+  const appends = 80;
+  for (let index = 0; index < appends; index++) {
+    fake.emit({ event: "user_message", session_id: LONG, text: `host write growth ${engine} ${index}`, mode: "send", attachments: [], delivery_id: `host-write-${engine}-${index}` });
+  }
+  await waitNamed(page.locator(`[data-part="jump-to-latest"][data-unseen-count="${appends + 1}"]`), `${row}: jump control with unseen=${appends + 1} did not appear after the growth`, 10_000);
+  for (const [label, offset] of [["host write 10 px above the end", 10], ["host write to scrollHeight", null]] as const) {
+    const result = await page.evaluate(async (offset) => {
+      const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+      scroll.scrollTop = offset === null ? scroll.scrollHeight : scroll.scrollHeight - scroll.clientHeight - offset;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const box = scroll.getBoundingClientRect();
+      const covering = [...document.querySelectorAll<HTMLElement>("[data-virtual-id]")].filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.height > 0 && rect.bottom > box.top + 1 && rect.top < box.bottom - 1 && getComputedStyle(element).opacity !== "0";
+      });
+      const engine = (window as typeof window & { __fulcrumVirtual?: { getSnapshot(): { pinned: boolean } } }).__fulcrumVirtual;
+      return {
+        rows: covering.length,
+        gap: scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop,
+        following: engine?.getSnapshot().pinned ?? null,
+        unseen: document.querySelector<HTMLElement>('[data-part="jump-to-latest"]')?.dataset.unseenCount ?? null,
+      };
+    }, offset);
+    if (result.rows === 0) throw new Error(`${row}: ${label} left the viewport blank (gap ${result.gap.toFixed(3)} px, follow ${result.following})`);
+    const follows = offset === null;
+    const expectedUnseen = follows ? null : String(appends + 1);
+    if (result.following !== follows || result.unseen !== expectedUnseen) {
+      throw new Error(`${row}: ${label} set follow ${result.following} with unseen ${result.unseen}; expected follow ${follows} with unseen ${expectedUnseen}`);
+    }
+  }
+  fake.emit({ event: "user_message", session_id: LONG, text: `host write followed ${engine}`, mode: "send", attachments: [], delivery_id: `host-write-followed-${engine}` });
+  await waitNamed(page.locator('[data-part="timeline"] [data-kind="user"]', { hasText: `host write followed ${engine}` }), `${row}: the append after the end write did not mount`, 5_000);
+  await waitAtBottom(page, `${row}: the append after the end write did not stay at the bottom`);
+  if (await page.locator('[data-part="jump-to-latest"]').count()) throw new Error(`${row}: the append after the end write showed the jump control`);
+}
+
+async function reconnectAnchorScenario(page: Page, engine: string) {
+  // The app reads the session hash only at load, and a hash-only goto keeps the document, so reload to open LONG.
+  await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
+  await page.reload();
+  await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 }).catch(async () => {
+    throw new Error(`${engine}: the 1,000-row run did not open; the page says ${JSON.stringify((await page.locator("main").innerText().catch(() => "")).slice(0, 200))}`);
+  });
+  await page.locator('[data-virtual-id="message:l999"]').waitFor({ timeout: 15_000 }).catch(() => {
+    throw new Error(`${engine}: the 1,000-row history did not finish loading`);
+  });
+  const scroll = page.locator('[data-part="timeline-scroll"]');
+  await waitAtBottom(page, `${engine}: the 1,000-row run did not settle at the bottom`);
+  await reconnectFake(page, engine);
+  await waitAtBottom(page, `${engine}: a pinned reader left the bottom after reconnect`);
+  await settle(page);
+  const pinnedGap = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+  console.log(`pinned ${engine.padEnd(8)} gap ${pinnedGap.toFixed(3)} px after reconnect`);
+  if (Math.abs(pinnedGap) > 1) throw new Error(`${engine}: a pinned reader is ${pinnedGap.toFixed(3)} px from the bottom after reconnect`);
+  const targetId = "message:l499";
+  const target = page.locator(`[data-virtual-id="${targetId}"]`);
+  const box = await scroll.boundingBox();
+  if (!box) throw new Error(`${engine}: no scroll viewport`);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+
+  let reached = false;
+  for (let step = 0; step < 80; step++) {
+    const targetBox = await target.boundingBox().catch(() => null);
+    if (targetBox && targetBox.y >= box.y && targetBox.y + targetBox.height <= box.y + box.height) { reached = true; break; }
+    const position = await scroll.evaluate((element) => ({ top: element.scrollTop, range: element.scrollHeight - element.clientHeight }));
+    const rawDelta = targetBox
+      ? targetBox.y + targetBox.height / 2 - (box.y + box.height / 2)
+      : position.range * 499 / 999 - position.top;
+    const delta = Math.max(-10_000, Math.min(10_000, rawDelta));
+    const before = position.top;
+    await page.mouse.wheel(0, delta);
+    await page.waitForFunction(({ selector, before, delta }) => {
+      const element = document.querySelector<HTMLElement>(selector);
+      return element !== null && (delta < 0 ? element.scrollTop < before : element.scrollTop > before);
+    }, { selector: '[data-part="timeline-scroll"]', before, delta }, { timeout: 2_000 }).catch(() => {
+      throw new Error(`${engine}: wheel step ${delta} did not move the timeline from ${before.toFixed(1)} px`);
+    });
+  }
+  if (!reached) {
+    const position = await scroll.evaluate((element) => ({ top: element.scrollTop, range: element.scrollHeight - element.clientHeight }));
+    throw new Error(`${engine}: ${targetId} was not visible after 80 wheel steps (${position.top.toFixed(1)} / ${position.range.toFixed(1)} px)`);
+  }
+  fake.emit({ event: "user_message", session_id: LONG, text: `before ${engine} reconnect`, mode: "send", attachments: [], delivery_id: `${engine}-before-anchor-check` });
+  await page.locator('[data-part="jump-to-latest"][data-unseen-count="1"]').waitFor({ timeout: 5_000 });
+  const beforeOffset = await stableRowOffset(page, targetId, engine, "before reconnect");
+
+  await reconnectFake(page, engine);
+  await target.waitFor({ timeout: 15_000 }).catch(() => { throw new Error(`${engine}: ${targetId} did not return after reconnect`); });
+  const afterOffset = await stableRowOffset(page, targetId, engine, "after reconnect");
+  const drift = Math.abs(afterOffset - beforeOffset);
+  console.log(`anchor ${engine.padEnd(8)} ${targetId} drift ${drift.toFixed(3)} px`);
+  if (drift > 1) throw new Error(`${engine}: ${targetId} moved ${drift.toFixed(3)} px`);
+
+  fake.emit({ event: "user_message", session_id: LONG, text: `after ${engine} reconnect`, mode: "send", attachments: [], delivery_id: `${engine}-anchor-check` });
+  await page.locator('[data-part="jump-to-latest"][data-unseen-count="2"]').waitFor({ timeout: 5_000 });
 }
 
 try {
@@ -679,12 +1417,54 @@ try {
       await page.keyboard.press("Escape");
       if (await page.getByRole("listbox").count()) throw new Error("Escape did not close the picker");
     });
-    await check("a 400-row history opens in virtual mode and lands at the bottom", async () => {
-      await page.locator("button.session", { hasText: "400 rows" }).click();
+    await check("a 1,000-row history opens in virtual mode and lands at the bottom", async () => {
+      await page.locator("button.session", { hasText: "1,000 rows" }).click();
       await page.locator('[data-part="timeline"][data-virtual="true"]').waitFor({ timeout: 10_000 });
-      await page.getByText("frame 399 took").waitFor({ timeout: 5000 });
+      await page.getByText("frame 999 took").waitFor({ timeout: 5000 });
       if (!(await page.evaluate(() => location.hash.includes("s-long")))) throw new Error("selection not in the url");
     });
+    await check("chromium: reconnect keeps a pinned 1,000-row run at the DOM end 5/5", () => checkReconnectBottom(page, "chromium"));
+    await check("chromium: scrollIntoView into content keeps the reader position", () => checkExternalScrollIntent(page, "chromium", "scrollIntoView"));
+    await check("chromium: Tab focus into content keeps the reader position", () => checkExternalScrollIntent(page, "chromium", "tab-focus"));
+    await check("chromium: host writes after growth mount rows under the viewport and keep follow off", () => checkExternalScrollIntent(page, "chromium", "host-write-after-growth"));
+    await check("chromium: scroll keys in the composer keep a pinned timeline following", () => checkComposerKeyKeepsFollow(page, "chromium"));
+    await check("chromium: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", () => checkReconnectAnchor(page, "chromium"));
+    // Here, not with the later WebKit lane check: the mobile checks re-arm the fake's live turn, and a running turn
+    // keeps zeta from opening another session. The Chromium page leaves meanwhile, so WebKit gets the one controller.
+    await page.goto("about:blank");
+    const reconnectWebkit = await webkit.launch();
+    try {
+      const reconnectWebkitPage = await reconnectWebkit.newPage({ viewport: { width: 1440, height: 900 } });
+      await check("webkit: reconnect keeps a pinned 1,000-row run at the DOM end 5/5", () => checkReconnectBottom(reconnectWebkitPage, "webkit"));
+      await check("webkit: scrollIntoView into content keeps the reader position", () => checkExternalScrollIntent(reconnectWebkitPage, "webkit", "scrollIntoView"));
+      await check("webkit: Tab focus into content keeps the reader position", () => checkExternalScrollIntent(reconnectWebkitPage, "webkit", "tab-focus"));
+      await check("webkit: host writes after growth mount rows under the viewport and keep follow off", () => checkExternalScrollIntent(reconnectWebkitPage, "webkit", "host-write-after-growth"));
+      await check("webkit: scroll keys in the composer keep a pinned timeline following", () => checkComposerKeyKeepsFollow(reconnectWebkitPage, "webkit"));
+      await check("webkit: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", () => checkReconnectAnchor(reconnectWebkitPage, "webkit"));
+      for (const gesture of ["PageDown", "PageDown repeated", "PageDown (body focus)"] as const) {
+        await check(`webkit: an animated ${gesture} to the end re-pins`, () => checkAnimatedReaderScrollRepins(reconnectWebkitPage, "webkit", gesture));
+      }
+      // Chromium animates key scrolls with smooth scrolling on; Firefox animates by default. Firefox runs only these rows.
+      for (const [engine, launch] of [
+        ["chromium smooth", () => chromium.launch({ channel: "chromium", args: ["--enable-smooth-scrolling"] })],
+        ["firefox", () => firefox.launch()],
+      ] as const) {
+        const animated = await launch();
+        try {
+          const animatedPage = await animated.newPage({ viewport: { width: 1440, height: 900 } });
+          await warmEngine(animatedPage, engine);
+          for (const gesture of ["PageDown", "End", "PageDown (body focus)"] as const) {
+            await check(`${engine}: an animated ${gesture} to the end re-pins`, () => checkAnimatedReaderScrollRepins(animatedPage, engine, gesture));
+          }
+        } finally {
+          await animated.close();
+        }
+      }
+    } finally {
+      await reconnectWebkit.close();
+      await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
+      await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+    }
     await check("composer: Enter sends, steer while running, a steer the turn dropped is resent, stop ends it, all with delivery ids", async () => {
       // Earlier checks continue after failure, so isolate this exact-list assertion from their accepted sends.
       fake.clearSent();
@@ -762,8 +1542,8 @@ try {
     // This exact gamma sequence already stays pinned on main; it guards the path rather than proving the fix fail-first.
     await check("a stopped queued steer and later turns stay pinned through the next own send", () => runStoppedSteerFollowScenario(page, fake.clearSent));
     await check("the page never scrolls: after IME typing the document fits the viewport and the headers stay in view", async () => {
-      // A tall run: the Timeline's hidden live region sits at the end of 400 rows.
-      await page.locator("button.session", { hasText: "400 rows" }).click();
+      // A tall run: the Timeline's hidden live region sits at the end of 1,000 rows.
+      await page.locator("button.session", { hasText: "1,000 rows" }).click();
       await page.locator('[data-part="timeline"][data-virtual="true"]').waitFor({ timeout: 10_000 });
       const field = page.locator(".dock textarea");
       await field.click();

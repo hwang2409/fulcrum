@@ -2,7 +2,7 @@ import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMe
 import type { ApprovalDecision, OutlineChange, RunEvent, RunItem } from "@fulcrum/core";
 import { streamTail } from "@fulcrum/core/internal";
 import type { VirtualCache } from "@fulcrum/virtual";
-import { useItem, useItemSelector, useRunDiagnostics, useRunRetry, useRunStore, useTimelineSnapshot } from "./hooks.js";
+import { useItem, useItemSelector, useRunDiagnostics, useRunRetry, useRunStore, useTimelineSnapshot, type RunStore } from "./hooks.js";
 import { HighlightContext, Tokens, useTokens } from "./highlight.js";
 import { boundText, duration, GrownText, lineCount, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { diffStatText } from "./tools/diff.js";
@@ -619,8 +619,17 @@ const Row = memo(function Row({ id, renderers }: { id: string; renderers?: Rende
 
 // A sub-agent row is fixed at 56 px; with the 12 px row gap the estimate is exact.
 const estimateRowSize = (kind: string) => kind === "tool" ? 120 : kind === "approval" ? 100 : kind === "message" ? 72 : kind === "sub_agent" ? 68 : 48;
-const virtualContainerStyle: CSSProperties = { position: "relative", display: "block", contain: "size style", overflowAnchor: "none" };
-const virtualRowStyle: CSSProperties = { position: "absolute", insetBlockStart: 0, insetInline: 0, display: "flex", flexDirection: "column", boxSizing: "border-box", paddingBlockEnd: "var(--fulcrum-gap, 12px)", contain: "layout style" };
+const virtualContainerStyle: CSSProperties = {
+  position: "relative",
+  display: "block",
+  contain: "size style",
+  boxSizing: "border-box",
+  overflowAnchor: "none",
+  overflowBlock: "clip",
+  overflowInline: "visible",
+  paddingBlock: "var(--fulcrum-virtual-gutter, 8px)",
+};
+const virtualRowStyle: CSSProperties = { position: "absolute", insetBlockStart: "var(--fulcrum-virtual-gutter, 8px)", insetInline: 0, display: "flex", flexDirection: "column", boxSizing: "border-box", paddingBlockEnd: "var(--fulcrum-gap, 12px)", contain: "layout style" };
 
 type TimelineBaseProps = {
   renderers?: Renderers;
@@ -683,10 +692,21 @@ const useUnconstrainedWarning: (enabled: boolean, hostOwned: boolean, scroll: Re
       });
     }, [enabled, hostOwned, itemCount, mountedCount, scroll])
   : () => {};
-const keyForStore = (store: object) => {
+const keyForStore = (store: RunStore) => {
+  if (store.runId !== undefined) return `run:${store.runId}`;
   let key = storeKeys.get(store);
   if (key === undefined) { key = nextStoreKey++; storeKeys.set(store, key); }
-  return key;
+  return `store:${key}`;
+};
+
+const sameValue = (left: unknown, right: unknown): boolean => {
+  if (Object.is(left, right)) return true;
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return false;
+  const leftKeys = Object.keys(left);
+  const rightRecord = right as Record<string, unknown>;
+  return leftKeys.length === Object.keys(rightRecord).length && leftKeys.every((key) =>
+    Object.prototype.hasOwnProperty.call(rightRecord, key)
+      && sameValue((left as Record<string, unknown>)[key], rightRecord[key]));
 };
 
 const ResyncStatus = () => {
@@ -704,15 +724,23 @@ const ResyncStatus = () => {
 /** Pass a stable `renderers` object (module scope or memoized) so appends do not re-render every row. */
 export const Timeline = memo(function Timeline(props: TimelineProps) {
   const store = useRunStore();
-  return <><ResyncStatus /><TimelineForStore key={keyForStore(store)} {...props} store={store} /></>;
+  const runKey = keyForStore(store);
+  return <><ResyncStatus /><TimelineForStore key={runKey} {...props} store={store} runKey={runKey} /></>;
 });
 
-const TimelineForStore = memo(function TimelineForStore({ store, renderers, className, virtual, scrollRef, followRequest, renderJumpToLatest, initialViewport, onViewport, "aria-label": ariaLabel = "agent activity" }: TimelineProps & { store: object }) {
-  const { items, change } = useTimelineSnapshot();
-  const enabled = virtual ?? items.length > 200;
+const TimelineForStore = memo(function TimelineForStore({ store, runKey, renderers, className, virtual, scrollRef, followRequest, renderJumpToLatest, initialViewport, onViewport, "aria-label": ariaLabel = "agent activity" }: TimelineProps & { store: RunStore; runKey: string }) {
+  const { items, change, historyPending } = useTimelineSnapshot();
+  const priorStore = useRef(store);
+  const priorVirtual = useRef(virtual ?? items.length > 200);
+  const replacementGap = priorStore.current !== store && items.length === 0;
+  const invalidMeasurements = useMemo(() => priorStore.current === store ? undefined : items
+    .filter(({ id }) => !sameValue(priorStore.current.getItem(id), store.getItem(id)))
+    .map(({ id }) => id), [items, store]);
+  // Once a run needs virtualization, keep its one engine alive while a replacement store replays short pages.
+  const enabled = virtual ?? (priorVirtual.current || items.length > 200);
   const ownedScrollRef = useRef<HTMLDivElement>(null);
   const activeScrollRef = scrollRef ?? ownedScrollRef;
-  const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef: activeScrollRef, enabled, outlineUpdate: change, resetKey: store, cache: initialViewport?.cache });
+  const list = useVirtualList(items, { estimateSize: estimateRowSize, gutter: 8, scrollRef: activeScrollRef, enabled, outlineUpdate: change, resetKey: runKey, invalidateMeasurements: invalidMeasurements, historyPending, cache: initialViewport?.cache });
   useUnconstrainedWarning(enabled, !!scrollRef, ownedScrollRef, items.length, list.snapshot.rows.length);
   const priorFollowRequest = useRef(followRequest);
   useLayoutEffect(() => {
@@ -722,15 +750,21 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
   const initialScroll = useRef(enabled);
   const restore = useRef(initialViewport);
   useLayoutEffect(() => {
-    if (!enabled) initialScroll.current = true;
-    else if (initialScroll.current && list.snapshot.totalSize > 0) {
+    if (!enabled) {
+      if (priorStore.current === store) initialScroll.current = true;
+    } else if (initialScroll.current && list.snapshot.totalSize > 0) {
       initialScroll.current = false;
       const viewport = restore.current;
       restore.current = undefined;
       if (viewport && !viewport.following && viewport.anchorId && items.some(({ id }) => id === viewport.anchorId)) list.scrollToId(viewport.anchorId, viewport.offset);
       else list.scrollToEnd();
     }
-  }, [enabled, items, list.scrollToEnd, list.scrollToId, list.snapshot.totalSize]);
+  }, [enabled, items, list.scrollToEnd, list.scrollToId, list.snapshot.totalSize, store]);
+  useLayoutEffect(() => {
+    if (replacementGap) return;
+    priorStore.current = store;
+    priorVirtual.current = enabled;
+  }, [enabled, replacementGap, store]);
   const leaving = useRef({ list, enabled, onViewport });
   leaving.current = { list, enabled, onViewport };
   useLayoutEffect(() => () => {
@@ -805,7 +839,7 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
         role="log"
         aria-label={ariaLabel}
         aria-live="off"
-        style={{ ...virtualContainerStyle, height: list.snapshot.totalSize }}
+        style={{ ...virtualContainerStyle, height: list.snapshot.totalSize + 16 }}
         onFocusCapture={(event) => setFocusedId(event.target instanceof Element ? event.target.closest<HTMLElement>("[data-virtual-id]")?.dataset.virtualId ?? null : null)}
         onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusedId(null); }}
       >
@@ -825,6 +859,7 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
             aria-posinset={row.index + 1}
             tabIndex={row === retainedRow ? -1 : 0}
             onKeyDown={(event) => {
+              if (event.target !== event.currentTarget) return; // arrows typed in a control inside the row belong to it
               const nextIndex = row.index + (event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0);
               if (nextIndex === row.index || nextIndex < 0 || nextIndex >= items.length) return;
               event.preventDefault();

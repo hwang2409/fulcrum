@@ -6,6 +6,8 @@
 
 `createRunStore()` owns one run. Dispatch generic `RunEvent` values, read ordered `{ id, kind }` entries with `getOutline()`, and read an entity with `getItem(id)`. The scheduler batches reduction and subscriber notification. Synchronous reads flush pending events. Use keyed subscriptions for entity rows and `subscribeOutline()` for the ordered timeline.
 
+Pass `{ runId }` when another store can replace the same logical run. Replacement stores for one run use the same non-empty id; different runs use different ids. The returned store exposes this immutable metadata. It does not enter reducer state or notify subscribers.
+
 Delivery, listener errors, re-entry, resync, and disposal follow the [notification contract](#notification-contract).
 
 `getOutlineSnapshot()` returns `{ items, change }`. A change is `{ from, splices }`, where each ordered splice is `{ index, deleteCount, items }`. Applying the splices to `from` produces `items`. Changes from one notification are merged. `change` is `null` for the first snapshot, after `resync`, and after disposal; `null` means "take `items` whole". An approval that folds into its tool row produces one splice, not a new row.

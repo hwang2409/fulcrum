@@ -152,7 +152,7 @@ jobs:
       - *highlight-recipes-hash
       - *highlight-recipes-cache
       # measured p100: 15m16s across 5 green main runs; 18m leaves margin and 7m for the job.
-      - run: cd apps/playground && bunx playwright install --with-deps chromium webkit
+      - run: cd apps/playground && bunx playwright install --with-deps chromium webkit firefox
         timeout-minutes: 18
       - *build-playground
       - run: cd apps/web && bun run gate
