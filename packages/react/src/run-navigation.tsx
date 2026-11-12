@@ -48,7 +48,10 @@ export type RunNavigatorProps = {
   /** Every move: a row opened, back, Escape, a crumb, or a correction (`replace`). Controlled paths must apply it. */
   onPathChange?(path: readonly string[], change: RunPathChange): void;
   runId?: string;
-  /** The root's breadcrumb label. */
+  /**
+   * The root's breadcrumb label. While a child run is open it also names the breadcrumb's navigation landmark
+   * ("run path: <label>"), so give each navigator on one page its own label.
+   */
   label?: string;
   renderers?: Renderers;
   highlight?: Highlight;
