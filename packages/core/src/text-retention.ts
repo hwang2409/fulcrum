@@ -43,7 +43,8 @@ function limitToolItem(item: ToolItem, cap: number): ToolItem {
   for (const source of toolSources(item)) {
     const next = limitTextSource(source, Math.max(0, remaining), "item-cap");
     replacements.set(source, next);
-    remaining -= next.retainedBytes;
+    // A cut source keeps its tail's headroom: the sources after it keep their totals and no body.
+    remaining = next.omission && !next.omission.whole ? 0 : remaining - next.retainedBytes;
   }
   return [...replacements].some(([before, after]) => before !== after) ? mapToolSources(item, replacements) : item;
 }

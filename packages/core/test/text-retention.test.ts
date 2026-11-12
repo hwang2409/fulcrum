@@ -110,6 +110,27 @@ test("a cut leaves its tail one grain of headroom, so a small append after it is
   }
 });
 
+test("a tail that slides keeps at most its budget less one grain, so slides come once per grain of output", () => {
+  const cap = 64 * 1024;
+  const store = createRunStore((flush) => flush(), { toolOutputItemBytes: cap, toolOutputRunBytes: 1_000_000 });
+  const line = (index: number) => `line ${index}\n`.padStart(40, "-");
+  store.dispatch(output("g", line(0)));
+  let prior = tool(store, "g").output;
+  let slides = 0;
+  for (let index = 1; index < 4_000; index++) {
+    store.dispatch(output("g", line(index)));
+    const next = tool(store, "g").output;
+    if (prior.omission && next.omission!.end !== prior.omission.end) {
+      slides++;
+      const head = [...next.chunks()].filter((chunk) => chunk.start < next.omission!.start).reduce((sum, chunk) => sum + utf8(chunk.text), 0);
+      const budget = cap - head;
+      expect(next.retainedBytes - head, `slide ${slides}`).toBeLessThanOrEqual(budget - Math.floor(budget / 8));
+    }
+    prior = next;
+  }
+  expect(slides).toBeGreaterThan(5);
+});
+
 test("an append after a cut that kept no tail is not a known append, so it starts a new line after the notice", () => {
   // An unterminated escape sequence longer than the tail budget: the safe tail start is past it, so the tail is empty.
   const store = createRunStore((flush) => flush(), { toolOutputItemBytes: 40, toolOutputRunBytes: 1_000_000 });
@@ -144,12 +165,11 @@ test("item accounting covers every output-bearing view and result source, in a s
   store.dispatch({ type: "tool_end", tool_call: call("all"), tool_result: { tool_call_id: "all", content: big("final"), is_error: false, blocks: [{ type: "text", text: big("block") }] } });
   const item = tool(store, "all");
   expect(retained(item)).toBeLessThanOrEqual(cap);
-  // The primary output comes first and takes the whole budget less its tail's one-grain headroom; the later sources,
-  // in order, share what is left of it (each slid tail leaves its own headroom), and each says what it did not keep.
+  // The primary output comes first and takes the whole budget less its tail's one-grain headroom; once it is cut,
+  // every later source keeps its totals and no body.
   expect(item.output.retainedBytes).toBeGreaterThan(cap - cap / 8 - 10);
   const later = sources(item).slice(1);
-  expect(later[0]!.retainedBytes).toBeGreaterThan(0);
-  expect(later.every((source) => source.omission && source.retainedBytes < 100)).toBe(true);
+  expect(later.map((source) => [source.retainedBytes, source.omission?.whole])).toEqual(later.map(() => [0, true]));
   // `auto` after a cut cannot tell whether the result repeats the output: it is its own source.
   expect(item.result?.relation).toBe("unknown");
   expect(item.result?.finalContent?.bytes).toBe(utf8(big("final")));
