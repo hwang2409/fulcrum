@@ -170,12 +170,34 @@ test("item accounting covers every output-bearing view and result source, in a s
   expect(item.output.retainedBytes).toBeGreaterThan(cap - cap / 8 - 10);
   const later = sources(item).slice(1);
   expect(later.map((source) => [source.retainedBytes, source.omission?.whole])).toEqual(later.map(() => [0, true]));
+  // A whole omission still says how much was not kept: all of it.
+  expect(later.map((source) => source.omission!.bytes)).toEqual(later.map((source) => source.bytes));
   // `auto` after a cut cannot tell whether the result repeats the output: it is its own source.
   expect(item.result?.relation).toBe("unknown");
   expect(item.result?.finalContent?.bytes).toBe(utf8(big("final")));
   expect(item.result?.blocks?.[0]?.metadata).toEqual({ type: "text" });
   expect(item.result?.blocks?.[0]?.text?.bytes).toBe(utf8(big("block")));
   expect(item.view?.kind === "shell" && [item.view.stdout!.bytes, item.view.stderr!.bytes]).toEqual([utf8(big("stdout")), utf8(big("stderr"))]);
+});
+
+test("a cut later source that must shrink again keeps its newest tail, not only its head", () => {
+  const cap = 1_000;
+  const store = createRunStore((flush) => flush(), { toolOutputItemBytes: cap, toolOutputRunBytes: 100_000 });
+  const stdout = `HEAD${"s".repeat(5_000)}END-OF-STDOUT`;
+  // The primary output is small, so stdout is cut with most of the budget.
+  store.dispatch({ type: "tool_output", tool_call: call("re"), output: "o".repeat(100), view: { kind: "shell", command: "run", stdout } });
+  const before = tool(store, "re").view;
+  if (before?.kind !== "shell") throw new Error("expected a shell view");
+  expect(before.stdout!.omission?.whole).toBe(false);
+  // The primary grows; the already cut stdout gets a smaller budget and is re-limited.
+  store.dispatch(output("re", "o".repeat(300)));
+  const view = tool(store, "re").view;
+  if (view?.kind !== "shell") throw new Error("expected a shell view");
+  const source = view.stdout!;
+  expect(text(source).endsWith("END-OF-STDOUT")).toBe(true);
+  expect(text(source).startsWith("HEAD")).toBe(true);
+  expect(source.retainedBytes).toBeLessThan(before.stdout!.retainedBytes);
+  expectTruthful(source, stdout, cap);
 });
 
 test("each stored view field is bounded even when no output streams", () => {
