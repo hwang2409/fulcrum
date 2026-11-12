@@ -168,7 +168,7 @@ export async function backfillBackwardHistory(
   while (page.nextBefore !== null) {
     options.signal.throwIfAborted();
     const response = await request({ before: page.nextBefore, historyValidator: joinPage.validator }, options.signal);
-    options.signal.throwIfAborted();
+    // A page that resolved before its owner moved on is still delivered; the owner's generation check drops it.
     page = parsePage(response, joinPage.validator, page.nextBefore);
     options.onPage(page);
   }

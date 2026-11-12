@@ -489,13 +489,14 @@ export function createReplayRegistry(deps: {
     return true;
   });
   const routeSequenced = (owner: Owner, params: EventParams) => {
-    if (params.event === "replay_stream_ended") {
-      if (params.stream_id === owner.streamId && owner.streamId !== undefined && activeSequencedOwner === owner && !owner.joining) supersede(owner);
-      return;
-    }
+    // One join at a time: every frame, a stream end too, waits for the join in flight and then meets its stream id.
     if (owner.joining) return void owner.buffer.push(params);
     const streamId = owner.streamId;
     if (activeSequencedOwner !== owner || owner.suspended || streamId === undefined) return;
+    if (params.event === "replay_stream_ended") {
+      if (params.stream_id === streamId) supersede(owner);
+      return;
+    }
     if (typeof params.stream_id !== "string" || !safeInteger(params.seq, 1)) return supersede(owner);
     if (params.stream_id !== streamId || params.seq <= owner.lastSeq) return;
     if (params.seq !== owner.lastSeq + 1) return supersede(owner);

@@ -1,6 +1,7 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
-import { createClient, parseJoinStatus, type EventParams, type Transport } from "../src/index.js";
+import type { RunEvent } from "@fulcrum/core";
+import { createClient, fromZetaHistory, parseJoinStatus, type EventParams, type Transport } from "../src/index.js";
 
 domShimAlarm(import.meta.path);
 
@@ -17,26 +18,55 @@ const joinResult = (overrides: Record<string, unknown> = {}) => ({
   status: { state: "running", pending_approvals: [], pending_approvals_truncated: false },
   ...overrides,
 });
-const harness = () => {
+const harness = (options: { maxSessions?: number } = {}) => {
   let receive!: (text: string) => void;
-  const sent: Array<{ id: number; method: string; params: unknown }> = [];
+  let drop = (_code?: number) => {};
+  const sent: Array<{ id: number; method: string; params: Record<string, unknown> }> = [];
   const transport: Transport = {
     send(text) { sent.push(JSON.parse(text)); },
     onMessage(listener) { receive = listener; },
+    onClose(listener) { drop = listener; },
     close() {},
   };
-  const client = createClient(transport, (job) => job());
+  const client = createClient(transport, (job) => job(), undefined, options);
   const reply = (id: number, result: unknown) => receive(JSON.stringify({ jsonrpc: "2.0", id, result }));
+  const fail = (id: number | null, code: number, data?: unknown, message = "failed") => receive(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message, ...(data ? { data } : {}) } }));
   const event = (params: EventParams) => receive(JSON.stringify({ jsonrpc: "2.0", method: "event", params }));
   const hello = client.hello(["session_replay_seq"]);
   reply(sent[0]!.id, { protocol_version: "1.2", capabilities: { features: ["session_replay_seq"] } });
   const ready = hello.then(() => { sent.splice(0); });
-  return { client, sent, reply, event, ready };
+  const joins = () => sent.filter(({ method }) => method === "session_history_and_subscribe");
+  return { client, sent, reply, fail, event, ready, joins, close: (code?: number) => drop(code) };
 };
+type Harness = ReturnType<typeof harness>;
 const waitFor = async (condition: () => boolean) => {
   for (let index = 0; index < 100 && !condition(); index++) await Bun.sleep(1);
   expect(condition()).toBe(true);
 };
+// Settles promise continuations without timers, for tests that fake them.
+const flush = async () => { for (let index = 0; index < 50; index++) await Promise.resolve(); };
+/** Opens `session` and answers its join with `overrides`. */
+const joined = async (fake: Harness, overrides: Record<string, unknown> = {}, session = "session-a", options?: { signal?: AbortSignal }) => {
+  const count = fake.joins().length;
+  const open = fake.client.openSessionReplay(session, options);
+  await waitFor(() => fake.joins().length === count + 1);
+  fake.reply(fake.joins().at(-1)!.id, joinResult(overrides));
+  return open;
+};
+const delta = (seq: number, text: string, stream = "stream-a", session = "session-a"): EventParams =>
+  ({ event: "assistant_delta", session_id: session, stream_id: stream, seq, delta: text, kind: "assistant" });
+const row = (id: string, text: string, role = "assistant") => ({ id, role, content: [{ type: "text", text }], tool_result: null });
+const outlineText = (client: ReturnType<typeof createClient>, session = "session-a") => {
+  const store = client.stores.get(session)!;
+  return store.getOutline().flatMap(({ id }) => {
+    const item = store.getItem(id);
+    if (item?.type === "message") return [item.text ?? item.message.content.map((block) => block.type === "text" ? block.text : "").join("")];
+    if (item?.type === "user") return [item.event.text];
+    return [];
+  });
+};
+const staleEvent = { code: "stale_event_sequence" };
+const staleSnapshot = { code: "stale_history_snapshot" };
 
 // Fail-first on c04b167: this reaches the final assertion and receives "xx" because positioned duplicates are ordinary events.
 test("positioned duplicate frames are not reduced twice", async () => {
@@ -54,8 +84,10 @@ test("positioned duplicate frames are not reduced twice", async () => {
 
   event(1);
   event(1);
+  await Bun.sleep(1);
 
   expect(assistantText(fake.client, "session-a")).toBe("x");
+  expect(fake.sent, "a duplicate is dropped, never treated as a gap").toHaveLength(1);
 });
 
 test("the shared status parser accepts ordinary omission but replay rejects it", async () => {
@@ -319,4 +351,456 @@ test("an already-aborted navigation never sends a join", async () => {
 
   await expect(fake.client.openSessionReplay("session-a", { signal: navigation.signal })).rejects.toMatchObject({ name: "AbortError" });
   expect(fake.sent).toHaveLength(0);
+});
+
+// Fail-first on c172a6a: the end arrived before the join's continuation ran, met no stream id, and was lost.
+test("a stream end right after the join reply waits for that join and then rejoins once", async () => {
+  const fake = harness();
+  await fake.ready;
+  const open = fake.client.openSessionReplay("session-a");
+  await waitFor(() => fake.joins().length === 1);
+  fake.reply(fake.joins()[0]!.id, joinResult());
+  fake.event({ event: "replay_stream_ended", session_id: "session-a", stream_id: "stream-a", reason: "evicted" });
+  await open;
+  await Bun.sleep(1);
+
+  expect(fake.joins()).toHaveLength(2);
+});
+
+test("a gap and a matching stream end in one turn start one join", async () => {
+  const fake = harness();
+  await fake.ready;
+  await joined(fake);
+  fake.event(delta(2, "gap"));
+  fake.event({ event: "replay_stream_ended", session_id: "session-a", stream_id: "stream-a", reason: "evicted" });
+  await Bun.sleep(1);
+
+  expect(fake.joins()).toHaveLength(2);
+});
+
+// Design: this proof plants "set lastSeq before dispatch". Every dispatch failure retires the stream and the rejoin
+// installs the frontier from history_seq, so that mutation cannot change behavior; this test pins the failure path.
+test("a store failure rejoins and never counts its frame as applied", async () => {
+  const fake = harness();
+  await fake.ready;
+  const lease = await joined(fake);
+  const restore = shimProperty(lease.store, "dispatch", { configurable: true, writable: true, value: () => { throw new Error("store failed"); } });
+  const errors: unknown[] = [];
+  const restoreReport = shimProperty(globalThis, "reportError", { configurable: true, writable: true, value: (error: unknown) => { errors.push(error); } });
+  try {
+    fake.event(delta(1, "lost"));
+  } finally {
+    restore();
+    restoreReport();
+  }
+  await waitFor(() => fake.joins().length === 2);
+  fake.reply(fake.joins()[1]!.id, joinResult({ replay: { stream_id: "stream-b", history_seq: 0 }, messages: [row("one", "one")] }));
+  await waitFor(() => lease.state.replay.phase === "joined");
+  fake.event(delta(1, " more", "stream-b"));
+
+  expect(errors).toHaveLength(1);
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-b", lastSeq: 1 });
+});
+
+test("an older page that resolves as the owner rejoins is not prepended", async () => {
+  const fake = harness();
+  await fake.ready;
+  await joined(fake, { messages: [row("new", "new")], next_before: 1, history_validator: { end: 2, entry_id: "new" } });
+  await waitFor(() => fake.sent.some(({ method }) => method === "session_history"));
+  const page = fake.sent.find(({ method }) => method === "session_history")!;
+  fake.reply(page.id, { messages: [row("old", "old")], next_before: null, history_validator: { end: 2, entry_id: "new" } });
+  fake.event(delta(2, "gap"));
+  await Bun.sleep(1);
+
+  expect(outlineText(fake.client)).toEqual(["new"]);
+  expect(fake.joins()).toHaveLength(2);
+});
+
+test("a continuation page that never answers times out at 15 s, keeps the stream, and never rejoins", async () => {
+  jest.useFakeTimers();
+  try {
+    const fake = harness();
+    await fake.ready;
+    const open = fake.client.openSessionReplay("session-a");
+    await flush();
+    fake.reply(fake.joins()[0]!.id, joinResult({ messages: [row("new", "new")], next_before: 1 }));
+    const lease = await open;
+    await flush();
+    const histories = new Set<unknown>();
+    lease.subscribeReplay(() => histories.add(lease.state.history));
+    jest.advanceTimersByTime(14_999);
+    await flush();
+    expect(lease.state.history.phase).toBe("loading");
+    jest.advanceTimersByTime(1);
+    await flush();
+    fake.event(delta(1, "live"));
+
+    expect([...histories], "one history notice").toEqual([{ phase: "incomplete", messages: 1, reason: "timeout" }]);
+    expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a", lastSeq: 1 });
+    expect(fake.joins()).toHaveLength(1);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("stale join retries stop after six attempts, and a manual retry starts again at attempt one", async () => {
+  jest.useFakeTimers();
+  try {
+    const fake = harness();
+    await fake.ready;
+    const open = fake.client.openSessionReplay("session-a");
+    for (const wait of [0, 500, 1_000, 2_000, 4_000, 8_000]) {
+      jest.advanceTimersByTime(wait);
+      await flush();
+      fake.fail(fake.joins().at(-1)!.id, -32009, staleEvent);
+      await flush();
+    }
+    const lease = await open;
+    jest.advanceTimersByTime(60_000);
+    await flush();
+    expect(fake.joins()).toHaveLength(6);
+    expect(lease.state.replay).toEqual({ phase: "failed", message: "could not join live updates", retryable: true });
+
+    lease.retry();
+    await flush();
+    expect(fake.joins()).toHaveLength(7);
+    expect(lease.state.replay).toEqual({ phase: "rejoining", attempt: 1 });
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("only an exact stale_event_sequence join error retries", async () => {
+  for (const data of [staleSnapshot, undefined]) {
+    const fake = harness();
+    await fake.ready;
+    const open = fake.client.openSessionReplay("session-a");
+    await waitFor(() => fake.joins().length === 1);
+    fake.fail(fake.joins()[0]!.id, -32009, data);
+    const lease = await open;
+    await Bun.sleep(1);
+
+    expect(fake.joins()).toHaveLength(1);
+    expect(lease.state.replay.phase).toBe("failed");
+  }
+});
+
+test("four stale continuations make three replacement joins, then stop the stream and the history walk", async () => {
+  const fake = harness();
+  await fake.ready;
+  const lease = await joined(fake, { messages: [row("new", "new")], next_before: 1 });
+  for (let cycle = 0; cycle < 4; cycle++) {
+    await waitFor(() => fake.sent.filter(({ method }) => method === "session_history").length === cycle + 1);
+    const pages = fake.sent.filter(({ method }) => method === "session_history");
+    fake.fail(pages.at(-1)!.id, -32009, staleSnapshot);
+    if (cycle === 3) break;
+    await waitFor(() => fake.joins().length === cycle + 2);
+    fake.reply(fake.joins().at(-1)!.id, joinResult({ messages: [row("new", "new")], next_before: 1 }));
+  }
+  await waitFor(() => lease.state.replay.phase === "failed");
+  fake.event(delta(1, " live"));
+  await Bun.sleep(1);
+
+  expect(fake.joins()).toHaveLength(4);
+  expect(lease.state).toMatchObject({ replay: { phase: "failed" }, history: { phase: "incomplete", reason: "stale_limit" } });
+  expect(outlineText(fake.client), "a retired stream dispatches nothing").toEqual(["new"]);
+});
+
+test("retrySession on a sequenced session starts one fresh join on the same owner", async () => {
+  const fake = harness();
+  await fake.ready;
+  const lease = await joined(fake, { messages: [row("one", "one")] });
+  const retried = fake.client.retrySession("session-a");
+  await waitFor(() => fake.joins().length === 2);
+  expect(outlineText(fake.client), "the committed transcript stays readable").toEqual(["one"]);
+  fake.reply(fake.joins()[1]!.id, joinResult({ messages: [row("one", "one"), row("two", "two")], replay: { stream_id: "stream-b", history_seq: 0 } }));
+  await retried;
+  await waitFor(() => lease.state.replay.phase === "joined");
+
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-b", lastSeq: 0 });
+  expect(lease.store).toBe(fake.client.stores.get("session-a")!);
+  expect(outlineText(fake.client)).toEqual(["one", "two"]);
+});
+
+test("a rejoin keeps unconfirmed optimistic rows and drops the ones history confirms", async () => {
+  const fake = harness();
+  await fake.ready;
+  const lease = await joined(fake);
+  lease.store.dispatch({ type: "user_message", text: "confirmed", mode: "send", intent: "send-1", delivery_id: "d1" });
+  lease.store.dispatch({ type: "user_message", text: "pending", mode: "send", intent: "send-2", delivery_id: "d2" });
+  fake.event(delta(2, "gap"));
+  await waitFor(() => fake.joins().length === 2);
+  fake.reply(fake.joins()[1]!.id, joinResult({
+    messages: [{ id: "u1", role: "user", content: [{ type: "text", text: "confirmed" }], tool_result: null, delivery_id: "d1" }],
+    replay: { stream_id: "stream-b", history_seq: 0 },
+  }));
+  await waitFor(() => lease.state.replay.phase === "joined");
+
+  expect(outlineText(fake.client)).toEqual(["confirmed", "pending"]);
+});
+
+const servedEnd = (turn: string, reason: string) => ({ id: `e-${turn}`, role: "system", event: "served_turn_end", data: { turn_id: turn, reason } });
+const idle = { state: "idle", pending_approvals: [], pending_approvals_truncated: false };
+
+// Fail-first on c172a6a: the joined idle snapshot ended with a bare run_end, so endOutcome was undefined.
+test("a joined idle snapshot keeps the newest served turn's stopped or failed outcome without a status call", async () => {
+  for (const [reason, outcome] of [["user_stop", "cancelled"], ["error", "failed"]] as const) {
+    const fake = harness();
+    await fake.ready;
+    await joined(fake, { messages: [row("a1", "work"), servedEnd("t1", reason)], status: idle });
+
+    expect(fake.client.stores.get("session-a")!.getState(), reason).toMatchObject({ turn: "idle", endOutcome: outcome });
+    expect(fake.sent.map(({ method }) => method)).toEqual(["session_history_and_subscribe"]);
+  }
+});
+
+// Fail-first on c172a6a: the registry took sequenced frames before the client recorded turn_start's turn id.
+test("servedTurn() follows sequenced turns, and a rejoin names no outcome for an older turn's end", async () => {
+  const fake = harness();
+  await fake.ready;
+  const lease = await joined(fake);
+  fake.event({ event: "turn_start", session_id: "session-a", stream_id: "stream-a", seq: 1, data: { turn_id: "t2" } });
+  expect(fake.client.servedTurn("session-a")).toBe("t2");
+  fake.event(delta(3, "gap"));
+  await waitFor(() => fake.joins().length === 2);
+  fake.reply(fake.joins()[1]!.id, joinResult({ messages: [servedEnd("t1", "user_stop")], status: idle, replay: { stream_id: "stream-b", history_seq: 0 } }));
+  await waitFor(() => lease.state.replay.phase === "joined");
+
+  expect(lease.store.getState()).toMatchObject({ turn: "idle", endOutcome: undefined });
+});
+
+// Fail-first on c172a6a: the owned store was the oldest unheld store, eviction refused it, and trimming stopped.
+test("event-created stores stay within maxSessions while a sequenced owner holds the oldest store", async () => {
+  const fake = harness({ maxSessions: 2 });
+  await fake.ready;
+  await joined(fake);
+  for (const session of ["b", "c", "d", "e"]) fake.event({ event: "assistant_delta", session_id: session, delta: "x", kind: "assistant" });
+
+  expect(fake.client.stores.has("session-a")).toBe(true);
+  expect([...fake.client.stores.keys()].filter((session) => session !== "session-a")).toEqual(["d", "e"]);
+});
+
+// Fail-first on c172a6a: the aborted reopen had already retired the owner's stream, so the next frame was dropped.
+test("an already-aborted reopen rejects and leaves the joined owner and its stream untouched", async () => {
+  const fake = harness();
+  await fake.ready;
+  const lease = await joined(fake);
+  const navigation = new AbortController();
+  navigation.abort();
+  await expect(fake.client.openSessionReplay("session-a", { signal: navigation.signal })).rejects.toMatchObject({ name: "AbortError" });
+  fake.event(delta(1, "live"));
+
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a", lastSeq: 1 });
+  expect(assistantText(fake.client, "session-a")).toBe("live");
+  expect(fake.joins()).toHaveLength(1);
+});
+
+test("retryHistory supersedes the walk with one fresh join and a fresh page walk; a superseded page cannot land", async () => {
+  const fake = harness();
+  await fake.ready;
+  const pages = () => fake.sent.filter(({ method }) => method === "session_history");
+  const page = { next_before: 1, history_validator: { end: 2, entry_id: "new" } };
+  const lease = await joined(fake, { messages: [row("new", "new")], ...page });
+  await waitFor(() => pages().length === 1);
+  fake.fail(pages()[0]!.id, -32603);
+  await waitFor(() => lease.state.history.phase === "incomplete");
+  expect(lease.state.history).toEqual({ phase: "incomplete", messages: 1, reason: "rpc_error" });
+
+  lease.retryHistory();
+  expect(lease.state.history).toEqual({ phase: "loading", messages: 0 });
+  await waitFor(() => fake.joins().length === 2);
+  fake.reply(fake.joins()[1]!.id, joinResult({ messages: [row("new", "new")], ...page, replay: { stream_id: "stream-b", history_seq: 0 } }));
+  await waitFor(() => pages().length === 2);
+  lease.retryHistory();
+  await waitFor(() => fake.joins().length === 3);
+  fake.reply(pages()[1]!.id, { messages: [row("stale", "stale")], next_before: null, history_validator: page.history_validator });
+  fake.reply(fake.joins()[2]!.id, joinResult({ messages: [row("new", "new")], ...page, replay: { stream_id: "stream-c", history_seq: 0 } }));
+  await waitFor(() => pages().length === 3);
+  fake.reply(pages()[2]!.id, { messages: [row("old", "old")], next_before: null, history_validator: page.history_validator });
+  await waitFor(() => lease.state.history.phase === "complete");
+
+  expect(lease.state.history).toEqual({ phase: "complete", messages: 2 });
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-c", lastSeq: 0 });
+  expect(outlineText(fake.client)).toEqual(["old", "new"]);
+  expect(fake.joins()).toHaveLength(3);
+});
+
+// #154 and design 4.3. Fail-first on c172a6a: the superseded load's failure cleared the new replay's quarantine.
+test("a same-session legacy retry keeps the displayed store until its own load commits; late old work changes nothing", async () => {
+  const fake = harness();
+  await fake.ready;
+  const events = (text: string) => fromZetaHistory([row(text, text)]);
+  const deferred = () => {
+    let resolve!: (events: RunEvent[]) => void;
+    return { promise: new Promise<RunEvent[]>((done) => { resolve = done; }), resolve };
+  };
+  const lateRecovery = deferred();
+  let loads = 0;
+  const displayed = await fake.client.replay("session-a", () => ++loads === 1 ? Promise.resolve(events("one")) : lateRecovery.promise, true);
+  expect(fake.client.finishReplay("session-a", 0)).toBe(true);
+  const recovering = fake.client.retrySession("session-a");
+  const first = deferred();
+  const second = deferred();
+  const superseded = fake.client.replay("session-a", () => first.promise, true);
+  const retried = fake.client.replay("session-a", () => second.promise, true);
+  expect(fake.client.stores.get("session-a")).toBe(displayed.store);
+
+  first.resolve(events("first"));
+  lateRecovery.resolve(events("late"));
+  await expect(superseded).rejects.toMatchObject({ name: "AbortError" });
+  await recovering;
+  fake.event({ event: "assistant_delta", session_id: "session-a", delta: "x", kind: "assistant" });
+  expect(fake.client.replayRevision("session-a"), "the newest replay still holds its quarantine").toBe(1);
+  expect(outlineText(fake.client), "late recovery and the late live frame left the displayed store alone").toEqual(["one"]);
+
+  second.resolve(events("second"));
+  const lease = await retried;
+  displayed.release();
+  expect(fake.client.stores.get("session-a")).toBe(lease.store);
+  expect(outlineText(fake.client)).toEqual(["second"]);
+  expect(fake.client.finishReplay("session-a", 1)).toBe(true);
+  lease.release();
+});
+
+// Design section 6: the client side of every named fake-zeta case.
+test.each([
+  ["accepted-new-session", "session_replaced"], ["accepted-resume-same", "session_replaced"],
+  ["active-reset-unstable-frontier", "session_replaced"], ["scope-ledger-evicted", "evicted"],
+  ["old-row-lookup-evicted", "evicted"], ["deferred-row-aged-out", "evicted"], ["unknown-route-evicted", "evicted"],
+])("matrix %s: the matching %s end starts exactly one join and the transcript stays readable", async (_, reason) => {
+  const fake = harness();
+  await fake.ready;
+  const lease = await joined(fake, { messages: [row("one", "one")] });
+  fake.event({ event: "replay_stream_ended", session_id: "session-a", stream_id: "stream-a", reason });
+  await waitFor(() => fake.joins().length === 2);
+  expect(outlineText(fake.client)).toEqual(["one"]);
+  fake.reply(fake.joins()[1]!.id, joinResult({ messages: [row("one", "one")], replay: { stream_id: "stream-b", history_seq: 0 } }));
+  await waitFor(() => lease.state.replay.phase === "joined");
+
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-b", lastSeq: 0 });
+  expect(fake.joins()).toHaveLength(2);
+});
+
+test("matrix second-valid-join-rejoined: the old stream's rejoined end after a supersession is ignored", async () => {
+  const fake = harness();
+  await fake.ready;
+  const lease = await joined(fake);
+  lease.retry();
+  await waitFor(() => fake.joins().length === 2);
+  fake.event({ event: "replay_stream_ended", session_id: "session-a", stream_id: "stream-a", reason: "rejoined" });
+  fake.reply(fake.joins()[1]!.id, joinResult({ replay: { stream_id: "stream-b", history_seq: 0 } }));
+  await waitFor(() => lease.state.replay.phase === "joined");
+  fake.event(delta(1, "next", "stream-b"));
+  await Bun.sleep(1);
+
+  expect(fake.joins()).toHaveLength(2);
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-b", lastSeq: 1 });
+});
+
+test.each(["second-join-stale-after-begin", "pending-join-reset"])("matrix %s: an exact stale join reply backs off and never restores the old stream", async () => {
+  jest.useFakeTimers();
+  try {
+    const fake = harness();
+    await fake.ready;
+    const open = fake.client.openSessionReplay("session-a");
+    await flush();
+    fake.reply(fake.joins()[0]!.id, joinResult({ messages: [row("one", "one")] }));
+    const lease = await open;
+    lease.retry();
+    await flush();
+    fake.fail(fake.joins()[1]!.id, -32009, staleEvent);
+    await flush();
+    fake.event(delta(1, " old stream"));
+    expect(fake.joins()).toHaveLength(2);
+    jest.advanceTimersByTime(500);
+    await flush();
+
+    expect(fake.joins()).toHaveLength(3);
+    expect(lease.state.replay).toEqual({ phase: "rejoining", attempt: 2 });
+    expect(outlineText(fake.client)).toEqual(["one"]);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("matrix join-rejected-before-validation: a rejected raw join leaves the owner, stream, frontier, and store unchanged", async () => {
+  const fake = harness();
+  await fake.ready;
+  const lease = await joined(fake, { messages: [row("one", "one")] });
+  const store = lease.store;
+  const raw = fake.client.request("session_history_and_subscribe", {});
+  fake.fail(fake.sent.at(-1)!.id, -32602);
+  await expect(raw).rejects.toMatchObject({ code: -32602 });
+  fake.event(delta(1, "next"));
+
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a", lastSeq: 1 });
+  expect(fake.client.stores.get("session-a")).toBe(store);
+  expect(outlineText(fake.client)).toEqual(["one", "next"]);
+});
+
+test("matrix accepted-resume-other: selecting another session suspends the first before the second joins", async () => {
+  const fake = harness();
+  await fake.ready;
+  const first = await joined(fake);
+  const second = await joined(fake, { replay: { stream_id: "stream-b", history_seq: 0 } }, "session-b");
+  fake.event(delta(1, "stale"));
+  fake.event(delta(1, "live", "stream-b", "session-b"));
+
+  expect(first.state.replay).toEqual({ phase: "suspended" });
+  expect(second.state.replay).toEqual({ phase: "joined", streamId: "stream-b", lastSeq: 1 });
+  expect(assistantText(fake.client, "session-a")).toBeUndefined();
+});
+
+test.each(["output-overflow-close", "write-or-admission-failure-close", "peer-close"])("matrix %s: a close is no stream end; the owner stops and the host's reconnect path runs", async (name) => {
+  const fake = harness();
+  await fake.ready;
+  const closes: unknown[] = [];
+  fake.client.onClose((error) => closes.push(error));
+  const open = fake.client.openSessionReplay("session-a");
+  await waitFor(() => fake.joins().length === 1);
+  if (name !== "write-or-admission-failure-close") fake.reply(fake.joins()[0]!.id, joinResult());
+  if (name === "output-overflow-close") fake.fail(null, -32011, undefined, "output overflow (controller)");
+  const lease = await Promise.race([open, Bun.sleep(5).then(() => undefined)]);
+  const notices: unknown[] = [];
+  lease?.subscribeReplay(() => notices.push(lease.state));
+  fake.close(1011);
+  const settled = await open;
+  settled.retry();
+  await Bun.sleep(1);
+
+  expect(closes).toHaveLength(1);
+  expect(fake.joins(), "no synthetic end and no rejoin after close").toHaveLength(1);
+  expect(notices).toEqual([]);
+  expect(settled.state.replay.phase).not.toBe("rejoining");
+});
+
+test.each([
+  ["active-reset-empty-frontier-stable", "assistant_reset"], ["active-reset-same-frontier-stable", "assistant_reset"],
+  ["append-only-compaction", "compaction_end"], ["rename-session-no-end", "session_renamed"],
+  ["fork-message-no-end", "session_forked"], ["switch-branch-no-end", "branch_switched"],
+])("matrix %s: no end and no join; the next contiguous frame applies", async (_, event) => {
+  const fake = harness();
+  await fake.ready;
+  const lease = await joined(fake);
+  fake.event({ event, session_id: "session-a", stream_id: "stream-a", seq: 1, data: {} });
+  fake.event(delta(2, "next"));
+  await Bun.sleep(1);
+
+  expect(fake.joins()).toHaveLength(1);
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a", lastSeq: 2 });
+  expect(assistantText(fake.client, "session-a")).toBe("next");
+});
+
+test("matrix older-history-read-no-end: reading an older page leaves the stream contiguous", async () => {
+  const fake = harness();
+  await fake.ready;
+  const lease = await joined(fake, { messages: [row("new", "new")], next_before: 1, history_validator: { end: 2, entry_id: "new" } });
+  await waitFor(() => fake.sent.some(({ method }) => method === "session_history"));
+  fake.reply(fake.sent.find(({ method }) => method === "session_history")!.id, { messages: [row("old", "old")], next_before: null, history_validator: { end: 2, entry_id: "new" } });
+  await waitFor(() => lease.state.history.phase === "complete");
+  fake.event(delta(1, "next"));
+
+  expect(fake.joins()).toHaveLength(1);
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a", lastSeq: 1 });
+  expect(outlineText(fake.client)).toEqual(["old", "new", "next"]);
 });
