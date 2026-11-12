@@ -4,7 +4,7 @@ import { sourceTail, storeToolView } from "@fulcrum/core/internal";
 import type { VirtualCache } from "@fulcrum/virtual";
 import { useItem, useItemSelector, useRunDiagnostics, useRunRetry, useRunStore, useTimelineSnapshot } from "./hooks.js";
 import { HighlightContext, Tokens, useTokens } from "./highlight.js";
-import { boundText, duration, GrownText, MAX_SUMMARY_CHARS, Output, sourceText } from "./tools/common.js";
+import { boundText, duration, GrownText, humanBytes, MAX_SUMMARY_CHARS, Output, sourceText } from "./tools/common.js";
 import { diffStatText } from "./tools/diff.js";
 import { argumentSummary, ToolBody, toolSummary } from "./tools/index.js";
 import { Notification, notificationText } from "./notification.js";
@@ -200,6 +200,8 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
         <Header item={tool} state={state} summary={summary} />
       </summary>
       {bodyMounted ? <div data-part="tool-body">
+        {/* The cut row sits in the middle of the output, which a collapsed preview elides: say it where it is always seen. */}
+        {tool.output.omission && !tool.output.omission.whole ? <p data-part="tool-gap" data-cut="">{humanBytes(tool.output.omission.bytes)} of {humanBytes(tool.output.bytes)} not kept from the middle of this output</p> : null}
         <GrownText.Provider value={grown}><Body item={tool} output={tool.output} state={state} /></GrownText.Provider>
         {tool.result?.finalContent ? <FinalResult id={id} source={tool.result.finalContent} /> : null}
         {tool.result?.blocks?.length ? <ResultBlocks id={id} blocks={tool.result.blocks} /> : null}

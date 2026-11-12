@@ -7,7 +7,7 @@ const DELTA = "x".repeat(100);
 const FINAL_TEXT_BYTES = DELTAS * DELTA.length;
 const RETAINED_HEAP_LIMIT = FINAL_TEXT_BYTES * 3 + 8_000_000;
 
-test("ending history releases accepted event objects and later dispatches are not retained", () => {
+test("ending history releases accepted event objects and later dispatches are not retained", async () => {
   const store = createRunStore((flush) => flush());
   let first: WeakRef<object>;
   let after: WeakRef<object>;
@@ -22,6 +22,8 @@ test("ending history releases accepted event objects and later dispatches are no
     store.dispatch(ordinary);
   })();
 
+  // JSC scans the stack conservatively: a stale slot from the dispatch can hold the event until the stack unwinds.
+  await Bun.sleep(0);
   Bun.gc(true);
   expect(first!.deref()).toBeUndefined();
   expect(after!.deref()).toBeUndefined();

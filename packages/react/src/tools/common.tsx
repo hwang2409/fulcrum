@@ -11,7 +11,7 @@ const JSON_FORMAT: TextFormat = { language: "json" };
 export const MAX_DOM_CHARS = 100_000;
 export const MAX_SUMMARY_CHARS = 240;
 
-const humanBytes = (value: number) => value < 1024 ? `${value} bytes` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB`;
+export const humanBytes = (value: number) => value < 1024 ? `${value} bytes` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB`;
 /** The visible line at a local cut: a whole body the run let go of, or the middle an item kept out. */
 export const omissionNotice = ({ reason, whole, bytes }: NonNullable<TextSourceSnapshot["omission"]>) =>
   whole && reason === "run-cap" ? `output not kept (${humanBytes(bytes)}) to save memory in this long run` : `${humanBytes(bytes)} not kept`;

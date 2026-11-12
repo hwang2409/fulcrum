@@ -195,7 +195,6 @@ class Source implements TextSourceSnapshot {
     readonly lineage: Lineage,
   ) {
     this.lines = newlineCount + (length > 0 && !endsNewline ? 1 : 0);
-    Object.freeze(values);
     Object.freeze(this);
   }
   chunks(): IterableIterator<TextChunk> { return this.values.values(); }
@@ -263,6 +262,17 @@ function keepTail(chunks: readonly Chunk[], budget: number, before?: Chunk): Chu
   if (at >= first.text.length) return keepTail(kept.slice(1), budget, first);
   const value = owned(first.text, at, first.text.length);
   return [chunk(first.start + at, first.line + newlines(first.text, 0, at), value, utf8Length(value)), ...kept.slice(1)];
+}
+
+/** The chunks from text offset `at` on; a chunk that `at` falls inside keeps its own copy of the part after `at`. */
+function chunksFrom(chunks: readonly Chunk[], at: number): Chunk[] {
+  let index = 0;
+  while (index < chunks.length && chunks[index]!.start + chunks[index]!.text.length <= at) index++;
+  const first = chunks[index];
+  if (!first || first.start >= at) return chunks.slice(index);
+  const offset = at - first.start;
+  const value = owned(first.text, offset, first.text.length);
+  return [chunk(at, first.line + newlines(first.text, 0, offset), value, utf8Length(value)), ...chunks.slice(index + 1)];
 }
 
 /** Chunks from the front worth at most `budget` bytes, cutting the last kept one at a safe place. */
@@ -334,8 +344,15 @@ export function appendTextSource(source: TextSourceSnapshot, delta: string, limi
     return new Source(prior.version + 1, length, bytes, bytes, null, prior.protocolTruncated, values, values.length, count, endsNewline, step.pending, prior.lineage);
   }
   if (!prior.omission) {
-    // The first cut: the retained text is complete and at most `limit`, so cutting it whole once is bounded.
-    return fromText(retainedText(prior) + added, limit, "item-cap", { version: prior.version + 1, protocolTruncated: prior.protocolTruncated, pendingHigh: step.pending, lineage: undefined });
+    // The first cut, over the chunks already held (never one joined string): a quarter for the head, the rest the tail.
+    const values = chunksOf(added, 0, added.length, prior.length, prior.newlineCount, prior.values.slice());
+    const head = keepHead(values, Math.floor(limit / 4));
+    const headBytes = sumBytes(head);
+    const start = head.length ? head.at(-1)!.start + head.at(-1)!.text.length : 0;
+    const tail = keepTail(chunksFrom(values, start), limit - headBytes, head.at(-1));
+    const retained = headBytes + sumBytes(tail);
+    const cut = omission("item-cap", start, tail[0]?.start ?? length, bytes - retained, retained === 0);
+    return new Source(prior.version + 1, length, bytes, retained, cut, prior.protocolTruncated, [...head, ...tail], head.length, count, endsNewline, step.pending, lineage());
   }
   const head = prior.values.slice(0, prior.headCount);
   const headBytes = sumBytes(head);
