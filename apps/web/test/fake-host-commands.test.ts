@@ -277,3 +277,24 @@ test("fake zeta validates host commands and requires a fresh binding after disco
     await fake.close();
   }
 });
+
+test("fake zeta joins replay before assigning positions and replaces its socket stream", async () => {
+  const fake = await startFakeZeta({ origins: [], live: false, replaySeqOffered: true });
+  try {
+    const connection = await credentials(fake);
+    const client = await connectZeta({ url: connection.url, token: connection.token, features: ["session_replay_seq"] });
+    const first = await client.openSessionReplay("s-reconnect");
+    expect(client.features).toContain("session_replay_seq");
+    expect(first.state.replay.phase).toBe("joined");
+    expect(first.lastSeq).toBe(0);
+    const replacement = await client.openSessionReplay("s-reconnect");
+    expect(replacement.state.replay.phase).toBe("joined");
+    expect(replacement.lastSeq).toBe(0);
+    expect(first.state.replay.phase).toBe("joined");
+    replacement.release();
+    first.release();
+    client.close();
+  } finally {
+    await fake.close();
+  }
+});

@@ -850,3 +850,18 @@ test("a turn_start during a quarantined replay still records the served turn id 
   lease.release();
   client.close();
 });
+
+test("every replay of a session starts quiet at revision 0, so hosts can end it with finishReplay(id, 0)", async () => {
+  // apps/web and gamma read `replayRevision(id) === 0` as "no live event arrived during this replay", including a retry
+  // that replays the session again while the displayed lease is still held (a same-session supersession).
+  const fake = fakeTransport();
+  const client = connect(fake.transport, (flush) => flush());
+  const leases = [];
+  for (const attempt of [1, 2, 3]) {
+    leases.push(await client.replay("s", async () => [{ type: "run_start" }], true));
+    expect(client.replayRevision("s"), `replay ${attempt} must start at revision 0`).toBe(0);
+    expect(client.finishReplay("s", 0)).toBe(true);
+  }
+  for (const lease of leases) lease.release();
+  client.close();
+});

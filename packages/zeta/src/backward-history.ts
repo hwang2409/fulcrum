@@ -1,8 +1,4 @@
-export type HistoryValidator = {
-  readonly end: number;
-  readonly entry_id: string | null;
-  readonly [field: string]: unknown;
-};
+import type { HistoryValidator } from "./wire.js";
 
 export type BackwardHistoryCursor = {
   readonly before: number | null;
@@ -22,7 +18,7 @@ export type BackwardHistoryRequest = (
   signal: AbortSignal,
 ) => Promise<unknown>;
 
-type Page = {
+export type BackwardHistoryPage = {
   readonly messages: readonly unknown[];
   readonly nextBefore: number | null;
   readonly validator: HistoryValidator;
@@ -42,7 +38,7 @@ function equalJson(left: unknown, right: unknown): boolean {
   return keys.length === Object.keys(rightRecord).length && keys.every((key) => Object.hasOwn(rightRecord, key) && equalJson(leftRecord[key], rightRecord[key]));
 }
 
-function parsePage(value: unknown, expectedValidator?: HistoryValidator, requestedBefore?: number): Page {
+function parsePage(value: unknown, expectedValidator?: HistoryValidator, requestedBefore?: number): BackwardHistoryPage {
   if (!value || typeof value !== "object") throw invalidResponse();
   const page = value as { messages?: unknown; next_before?: unknown; history_validator?: unknown };
   if (!Array.isArray(page.messages) || (page.next_before !== null && (!Number.isInteger(page.next_before) || (page.next_before as number) < 0)) ||
@@ -84,7 +80,7 @@ export async function openBackwardHistory(
   readonly complete: Promise<BackwardHistorySnapshot>;
 }> {
   const signal = options.signal ?? new AbortController().signal;
-  let pages: Page[] = [];
+  let pages: BackwardHistoryPage[] = [];
   let restart = 0;
   let staleRestarts = 0;
 
@@ -100,7 +96,7 @@ export async function openBackwardHistory(
     staleRestarts++;
     restart++;
   };
-  const publish = (page: Page, cause: BackwardHistorySnapshot["cause"]): BackwardHistorySnapshot => {
+  const publish = (page: BackwardHistoryPage, cause: BackwardHistorySnapshot["cause"]): BackwardHistorySnapshot => {
     const snapshot = {
       rows: [...pages].reverse().flatMap(({ messages }) => messages),
       pageRows: page.messages,
@@ -158,4 +154,22 @@ export async function openBackwardHistory(
     return current;
   })();
   return { snapshot, complete };
+}
+
+export async function backfillBackwardHistory(
+  joinPage: BackwardHistoryPage,
+  request: BackwardHistoryRequest,
+  options: {
+    readonly signal: AbortSignal;
+    readonly onPage: (page: BackwardHistoryPage) => void;
+  },
+): Promise<void> {
+  let page = joinPage;
+  while (page.nextBefore !== null) {
+    options.signal.throwIfAborted();
+    const response = await request({ before: page.nextBefore, historyValidator: joinPage.validator }, options.signal);
+    // A page that resolved before its owner moved on is still delivered; the owner's generation check drops it.
+    page = parsePage(response, joinPage.validator, page.nextBefore);
+    options.onPage(page);
+  }
 }
