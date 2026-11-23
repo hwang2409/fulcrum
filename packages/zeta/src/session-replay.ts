@@ -51,8 +51,16 @@ export type StoreStep =
 type Request = (method: string, params: Record<string, unknown>, options: { signal: AbortSignal; timeoutMs: number }) => Promise<unknown>;
 type Load = (signal: AbortSignal) => Promise<RunEvent[]>;
 type Recovery = { canceled: boolean; controller?: AbortController; timer?: ReturnType<typeof setTimeout>; wake?: () => void };
+type LegacyLoad = { ended: boolean };
 /** One legacy generation: its loader, its quarantine, and its pending load or recovery. */
-type Legacy = { readonly load: Load; quarantined: boolean; revision: number; loadController?: AbortController; recovery?: Recovery };
+type Legacy = {
+  readonly load: Load;
+  quarantined: boolean;
+  revision: number;
+  loading?: LegacyLoad;
+  loadController?: AbortController;
+  recovery?: Recovery;
+};
 type Owner = {
   readonly session: string;
   readonly mode: ReplayMode;
@@ -63,10 +71,9 @@ type Owner = {
   controller?: AbortController;
   timer?: ReturnType<typeof setTimeout>;
   wake?: () => void;
-  /** The live stream and its applied frontier: a frame counts as applied only once `lastSeq` holds its number. */
-  streamId?: string;
+  /** The applied frontier in sequenced mode. */
   lastSeq: number;
-  /** Rejoins in a row spent from the REJOIN_LIMIT budget; an ordinary join resets it. */
+  /** Automatic rejoins spent without progress; explicit retries get a fresh budget. */
   rejoinCycles: number;
   joining: boolean;
   suspended: boolean;
@@ -83,6 +90,9 @@ type Owner = {
 const RETRY_DELAYS = [0, 500, 1_000, 2_000, 4_000, 8_000] as const;
 // Automatic rejoins that cannot make progress (a stale older page, an unreadable live payload) share one budget.
 const REJOIN_LIMIT = 3;
+class StreamEndLimit extends Error {
+  constructor() { super("replay stream kept ending before a load could commit"); }
+}
 const PAGE_TIMEOUT_MS = 15_000;
 const JOIN_FAILED = { phase: "failed", message: "could not join live updates", retryable: true } as const;
 const rpcCode = (error: unknown, code: string) => {
@@ -144,7 +154,8 @@ export function createReplayRegistry(deps: {
   readonly protocolViolation: (message: string) => void;
 }) {
   const owners = new Map<string, Owner>();
-  let activeSequencedOwner: Owner | undefined;
+  type ReplaySlot = { owner: Owner; streamId?: string };
+  let slot: ReplaySlot | undefined;
   let closed = false;
 
   const active = (owner: Owner, generation: number) => !closed && !owner.released && owners.get(owner.session) === owner && owner.generation === generation;
@@ -170,7 +181,7 @@ export function createReplayRegistry(deps: {
     owner.wake?.();
     owner.wake = undefined;
     owner.joining = false;
-    owner.streamId = undefined;
+    retireSlot(owner);
     owner.buffer = [];
     owner.retainedApprovalEnds.clear();
     owner.openApprovals.clear();
@@ -203,7 +214,6 @@ export function createReplayRegistry(deps: {
     owner.navigationCleanup = undefined;
     owner.released = true;
     owners.delete(owner.session);
-    if (activeSequencedOwner === owner) activeSequencedOwner = undefined;
   };
   /** Drops one lease; the last one releases the owner unless another owner has replaced it. */
   const releaseLease = (owner: Owner) => {
@@ -214,12 +224,17 @@ export function createReplayRegistry(deps: {
     const generation = owner.generation;
     cancel(owner);
     owner.suspended = true;
-    if (activeSequencedOwner === owner) activeSequencedOwner = undefined;
     publish(owner, generation, { ...owner.state, replay: { phase: "suspended" } });
   };
-  const transferSlot = (owner: Owner) => {
-    if (activeSequencedOwner && activeSequencedOwner !== owner) suspend(activeSequencedOwner);
-    activeSequencedOwner = owner;
+  const transferSlot = (owner?: Owner) => {
+    const previous = slot?.owner;
+    const next: ReplaySlot | undefined = owner && { owner };
+    slot = next;
+    if (previous?.mode === "sequenced" && previous !== owner) suspend(previous);
+    return next;
+  };
+  const retireSlot = (owner: Owner) => {
+    if (slot?.owner === owner) slot = undefined;
   };
   const wait = (owner: Owner, generation: number, delay: number) => new Promise<void>((resolve) => {
     if (!delay || !active(owner, generation)) return resolve();
@@ -229,6 +244,34 @@ export function createReplayRegistry(deps: {
   const violation = (message: string) => call(() => deps.protocolViolation(message));
 
   // Legacy mode: `replay`, `replayRevision`, `finishReplay`, and store recovery for one generation.
+  const beginLegacyLoad = (legacy: Legacy, signal: AbortSignal) => {
+    legacy.loading = { ended: false };
+    return legacy.load(signal); // host code: outside; README row "load(signal)"
+  };
+  const retryEndedLoad = (owner: Owner, legacy: Legacy) => {
+    const ended = legacy.loading?.ended;
+    legacy.loading = undefined;
+    if (!ended || slot?.owner !== owner) return false;
+    // A matching end during history loading invalidates that snapshot. Keep the current store and try again.
+    if (owner.rejoinCycles >= REJOIN_LIMIT) throw new StreamEndLimit();
+    owner.rejoinCycles++;
+    return true;
+  };
+  const beginJoinRequest = (session: string | undefined, signal: AbortSignal | undefined) => {
+    const owner = session === undefined ? undefined : owners.get(session);
+    // The sequenced owner reserved the slot before beginning its own join. Other joins retire it now, before send.
+    if (signal && owner?.mode === "sequenced" && slot?.owner === owner && owner.controller?.signal === signal) return;
+    const attempt = owner?.legacy?.loading;
+    const requested = transferSlot(attempt ? owner : undefined);
+    if (!requested || !attempt) return;
+    return (result: unknown) => {
+      if (slot !== requested || requested.owner.legacy?.loading !== attempt) return;
+      const streamId = (result as { replay?: { stream_id?: unknown } } | null)?.replay?.stream_id;
+      if (typeof streamId !== "string" || !streamId) return;
+      requested.streamId = streamId;
+      attempt.ended = false;
+    };
+  };
   const replayLegacy = async (session: string, load: Load, keepQuarantined = false): Promise<SessionLease> => {
     const owner = acquire(session, "legacy");
     deps.storeStep(session, { kind: "replay" });
@@ -237,9 +280,14 @@ export function createReplayRegistry(deps: {
     const controller = new AbortController();
     const legacy: Legacy = { load, quarantined: true, revision: 0, loadController: controller };
     owner.legacy = legacy;
+    owner.rejoinCycles = 0;
     try {
-      const history = await load(controller.signal); // host code: outside; README row "load(signal)"
-      if (controller.signal.aborted || !active(owner, generation)) throw abortError();
+      let history: RunEvent[];
+      do {
+        history = await beginLegacyLoad(legacy, controller.signal);
+        if (controller.signal.aborted || !active(owner, generation)) throw abortError();
+      } while (retryEndedLoad(owner, legacy));
+      owner.rejoinCycles = 0;
       const store = deps.makeStore(session);
       owner.store = store;
       // The store shown so far stays until now; the install disposes it once no view holds it.
@@ -255,7 +303,10 @@ export function createReplayRegistry(deps: {
       if (!keepQuarantined) endQuarantine(legacy);
       return lease;
     } catch (error) {
-      if (owner.legacy === legacy) owner.legacy = undefined;
+      if (owner.legacy === legacy) {
+        retireSlot(owner);
+        owner.legacy = undefined;
+      }
       releaseLease(owner);
       throw error;
     }
@@ -273,11 +324,12 @@ export function createReplayRegistry(deps: {
     recovery.wake = resolve;
     recovery.timer = setTimeout(resolve, delay);
   });
-  const recoverLegacy = async (owner: Owner, legacy: Legacy, target: SessionStore) => {
+  const recoverLegacy = async (owner: Owner, legacy: Legacy, target: SessionStore, automatic = false) => {
     cancelRecovery(legacy);
     const recovery: Recovery = { canceled: false };
     legacy.recovery = recovery;
     legacy.quarantined = true;
+    if (!automatic) owner.rejoinCycles = 0;
     let failure: unknown;
     try {
       for (const delay of RETRY_DELAYS) {
@@ -286,23 +338,31 @@ export function createReplayRegistry(deps: {
           recovery.wake = undefined;
           recovery.timer = undefined;
         }
-        if (recovery.canceled) return;
+        if (recovery.canceled || (automatic && slot?.owner !== owner)) return;
         try {
           const controller = new AbortController();
           recovery.controller = controller;
-          // A throw, or a value that cannot be iterated, is a load failure here, not a listener error.
-          const history = [...await legacy.load(controller.signal)]; // host code: outside; README row "load(signal)"
+          let history: RunEvent[];
+          do {
+            // A value that cannot be iterated is a load failure here, not a listener error.
+            history = [...await beginLegacyLoad(legacy, controller.signal)];
+            if (recovery.canceled || owner.store !== target) return;
+          } while (retryEndedLoad(owner, legacy));
           recovery.controller = undefined;
-          if (recovery.canceled || owner.store !== target) return;
+          owner.rejoinCycles = 0;
           call(() => target.resync(history));
-          legacy.quarantined = false;
+          if (legacy.recovery === recovery) legacy.quarantined = false;
           return;
         } catch (error) {
           if (recovery.canceled) return;
           recovery.controller = undefined;
+          legacy.loading = undefined;
+          if (slot?.owner === owner) slot.streamId = undefined;
           failure = error;
+          if (error instanceof StreamEndLimit) break;
         }
       }
+      retireSlot(owner);
       if (owner.store === target) call(() => target.resyncFailed(failure));
       throw failure;
     } finally {
@@ -355,9 +415,13 @@ export function createReplayRegistry(deps: {
     call(() => owner.store?.endHistory());
   };
   /** Installs a validated join: newest history, status baseline, and stream frontier in one store commit. */
-  const commitJoin = (owner: Owner, generation: number, result: SessionReplayJoinResult, rejoinCycles: number) => {
-    owner.streamId = result.replay.stream_id;
-    owner.rejoinCycles = rejoinCycles;
+  const commitJoin = (owner: Owner, generation: number, result: SessionReplayJoinResult, rejoinCycles: number, replacingEndedStream: boolean) => {
+    const streamId = result.replay.stream_id;
+    if (slot?.owner !== owner) return;
+    slot.streamId = streamId;
+    // An end already waiting for this reply means the replacement never became usable.
+    const endedBeforeCommit = replacingEndedStream && owner.buffer.some((frame) => frame.event === "replay_stream_ended" && frame.stream_id === streamId);
+    owner.rejoinCycles = replacingEndedStream && !endedBeforeCommit ? 0 : rejoinCycles;
     owner.lastSeq = result.replay.history_seq;
     const candidate = deps.makeStore(owner.session);
     call(() => candidate.beginHistory());
@@ -369,7 +433,7 @@ export function createReplayRegistry(deps: {
     owner.joining = false;
     const messages = result.messages.length;
     publish(owner, generation, {
-      replay: { phase: "joined", streamId: owner.streamId },
+      replay: { phase: "joined", streamId },
       history: result.next_before === null ? { phase: "complete", messages } : { phase: "loading", messages },
       approvals: { incomplete: truncated ? "server_truncated" : null },
     });
@@ -378,30 +442,31 @@ export function createReplayRegistry(deps: {
     if (result.next_before === null) return finishHistory(owner, generation);
     void backfill(owner, generation, { messages: result.messages, nextBefore: result.next_before, validator: result.history_validator });
   };
-  const startJoin = async (owner: Owner, rejoining: boolean, rejoinCycles = 0): Promise<void> => {
+  const startJoin = async (owner: Owner, rejoining: boolean, rejoinCycles = 0, replacingEndedStream = false): Promise<void> => {
     const generation = owner.generation;
-    const current = () => active(owner, generation) && !owner.suspended && activeSequencedOwner === owner;
+    const current = () => active(owner, generation) && !owner.suspended && slot?.owner === owner;
     transferSlot(owner);
     owner.joining = true;
-    owner.streamId = undefined;
     for (let index = 0; index < RETRY_DELAYS.length; index++) {
       if (!current()) return;
       await wait(owner, generation, RETRY_DELAYS[index]!);
       if (!current()) return;
       publish(owner, generation, { ...owner.state, replay: { phase: rejoining ? "rejoining" : "joining", attempt: index + 1 } });
+      if (!current()) return;
       const controller = new AbortController();
       owner.controller = controller;
       try {
         const result = parseJoin(await deps.request("session_history_and_subscribe", { session_id: owner.session }, { signal: controller.signal, timeoutMs: PAGE_TIMEOUT_MS }));
         if (!current() || controller.signal.aborted) return;
         owner.controller = undefined;
-        return commitJoin(owner, generation, result, rejoinCycles);
+        return commitJoin(owner, generation, result, rejoinCycles, replacingEndedStream);
       } catch (error) {
         if (owner.controller === controller) owner.controller = undefined;
         if (!active(owner, generation) || controller.signal.aborted || isAbort(error)) return;
         if (rpcCode(error, "stale_event_sequence") && index + 1 < RETRY_DELAYS.length) continue;
         owner.joining = false;
         owner.buffer = [];
+        retireSlot(owner);
         publish(owner, generation, { ...owner.state, replay: JOIN_FAILED });
         return;
       }
@@ -419,7 +484,7 @@ export function createReplayRegistry(deps: {
       }, { signal, timeoutMs: PAGE_TIMEOUT_MS }), {
         signal: controller.signal,
         onPage(page) {
-          if (!active(owner, generation) || activeSequencedOwner !== owner) return;
+          if (!active(owner, generation) || slot?.owner !== owner) return;
           const events = reconcilePage(owner, page.messages);
           call(() => owner.store?.prepend(events));
           messages += page.messages.length;
@@ -437,20 +502,21 @@ export function createReplayRegistry(deps: {
       if (owner.controller === controller) owner.controller = undefined;
     }
   };
-  /** Starts a fresh atomic join in a new generation of the same owner; the committed store stays readable. */
   /** Spends one rejoin from the budget, or, when it is spent, retires the stream so state and routing agree it stopped. */
-  const rejoinOrStop = (owner: Owner, generation: number, history: ReplayHistoryState) => {
-    if (owner.rejoinCycles < REJOIN_LIMIT) return supersede(owner, owner.rejoinCycles + 1);
+  const rejoinOrStop = (owner: Owner, generation: number, history: ReplayHistoryState, replacingEndedStream = false) => {
+    if (owner.rejoinCycles < REJOIN_LIMIT) return supersede(owner, owner.rejoinCycles + 1, false, replacingEndedStream);
     finishHistory(owner, generation);
     cancel(owner);
-    publish(owner, generation, { replay: JOIN_FAILED, history, approvals: owner.state.approvals });
+    const settledHistory = history.phase === "loading" ? { ...history, phase: "incomplete", reason: "stale_limit" } as const : history;
+    publish(owner, generation, { replay: JOIN_FAILED, history: settledHistory, approvals: owner.state.approvals });
   };
-  const supersede = (owner: Owner, rejoinCycles = 0, historyRetry = false) => {
+  /** Starts a fresh atomic join in a new generation of the same owner; the committed store stays readable. */
+  const supersede = (owner: Owner, rejoinCycles = 0, historyRetry = false, replacingEndedStream = false) => {
     cancel(owner);
     owner.generation++;
     owner.suspended = false;
     if (historyRetry) owner.state = { ...owner.state, history: { phase: "loading", messages: 0 } };
-    void startJoin(owner, true, rejoinCycles);
+    void startJoin(owner, true, rejoinCycles, replacingEndedStream);
   };
   const openSessionReplay = async (session: string, options: { signal?: AbortSignal } = {}): Promise<SessionReplayLease> => {
     if (options.signal?.aborted) throw abortError();
@@ -498,14 +564,10 @@ export function createReplayRegistry(deps: {
     return true;
   });
   const routeSequenced = (owner: Owner, params: EventParams) => {
-    // One join at a time: every frame, a stream end too, waits for the join in flight and then meets its stream id.
+    if (slot?.owner !== owner) return;
     if (owner.joining) return void owner.buffer.push(params);
-    const streamId = owner.streamId;
-    if (activeSequencedOwner !== owner || owner.suspended || streamId === undefined) return;
-    if (params.event === "replay_stream_ended") {
-      if (params.stream_id === streamId) supersede(owner);
-      return;
-    }
+    const streamId = slot.streamId;
+    if (streamId === undefined) return;
     if (owner.state.replay.phase !== "joined") return;
     if (typeof params.stream_id !== "string" || !safeInteger(params.seq, 1)) return supersede(owner);
     if (params.stream_id !== streamId || params.seq <= owner.lastSeq) return;
@@ -522,28 +584,47 @@ export function createReplayRegistry(deps: {
     for (const event of filterTailApprovals(owner, events))
       call(() => { try { owner.store?.dispatch(event); } catch (error) { dispatched = false; throw error; } });
     // A store failure can already have started a new generation through its recovery hook.
-    if (!active(owner, generation) || owner.streamId !== streamId) return;
+    if (!active(owner, generation) || slot?.owner !== owner || slot.streamId !== streamId) return;
     if (!dispatched) return supersede(owner);
     // Advancing the frontier is what counts the frame as applied, so it happens only after every event reduced. No
     // publish: a text delta changes the store, which batches its own notifications, not the replay state.
     owner.lastSeq = params.seq;
   };
-  /** Takes an owned session's frame. Returns false when the frame should use ordinary routing. */
-  const route = (params: EventParams) => {
-    const owner = typeof params.session_id === "string" ? owners.get(params.session_id) : undefined;
-    if (!owner) return false;
-    if (owner.mode === "sequenced") {
-      routeSequenced(owner, params);
-      return true;
+  const endLegacyStream = (owner: Owner) => {
+    const legacy = owner.legacy;
+    if (!legacy) return;
+    if (legacy.loading) legacy.loading.ended = true;
+    else if (owner.store) {
+      owner.rejoinCycles++;
+      void recoverLegacy(owner, legacy, owner.store, true).catch(() => {});
     }
-    if (!owner.legacy?.quarantined) return false;
-    owner.legacy.revision++;
+  };
+  const routeStreamEnd = (params: EventParams) => {
+    const owner = slot?.owner;
+    if (!owner || owner.session !== params.session_id) return;
+    // The sequenced join commits in a promise continuation. Match buffered ends once it knows the stream id.
+    if (owner.joining) return void owner.buffer.push(params);
+    if (slot?.streamId === undefined || slot.streamId !== params.stream_id) return;
+    // Clear the stream, but leave the recovery intent until a newer join takes the slot.
+    slot.streamId = undefined;
+    if (owner.mode === "sequenced") rejoinOrStop(owner, owner.generation, owner.state.history, true);
+    else endLegacyStream(owner);
+  };
+  /** Takes replay control frames and owned live frames; false leaves a live frame to ordinary routing. */
+  const route = (params: EventParams) => {
+    if (params.event === "replay_stream_ended") return routeStreamEnd(params), true;
+    const owner = typeof params.session_id === "string" ? owners.get(params.session_id) : undefined;
+    if (owner?.mode === "sequenced") return routeSequenced(owner, params), true;
+    const legacy = owner?.legacy;
+    if (!legacy?.quarantined) return false;
+    legacy.revision++;
     return true;
   };
 
   return {
     openSessionReplay,
     route,
+    beginJoinRequest,
     replay: replayLegacy,
     replayRevision: (session: string) => legacyOf(session)?.revision ?? 0,
     /** Opens live routing only if no event arrived after `revision` was captured. */
@@ -559,7 +640,9 @@ export function createReplayRegistry(deps: {
       const owner = owners.get(session);
       if (!owner?.store || (store && owner.store !== store)) return undefined;
       if (owner.mode === "sequenced") return void supersede(owner), Promise.resolve();
-      return owner.legacy ? recoverLegacy(owner, owner.legacy, owner.store) : undefined;
+      const legacy = owner.legacy;
+      if (!legacy || (legacy.loading && !legacy.recovery)) return undefined;
+      return recoverLegacy(owner, legacy, owner.store);
     },
     prepareEvict(session: string) {
       const owner = owners.get(session);
@@ -572,7 +655,7 @@ export function createReplayRegistry(deps: {
       closed = true;
       for (const owner of owners.values()) cancel(owner), owner.navigationCleanup?.(), owner.listeners.clear();
       owners.clear();
-      activeSequencedOwner = undefined;
+      slot = undefined;
     },
   };
 }
