@@ -52,7 +52,15 @@ type Request = (method: string, params: Record<string, unknown>, options: { sign
 type Load = (signal: AbortSignal) => Promise<RunEvent[]>;
 type Recovery = { canceled: boolean; controller?: AbortController; timer?: ReturnType<typeof setTimeout>; wake?: () => void };
 /** One legacy generation: its loader, its quarantine, and its pending load or recovery. */
-type Legacy = { readonly load: Load; quarantined: boolean; revision: number; loadController?: AbortController; recovery?: Recovery };
+type LegacyLoad = { ended: boolean };
+type Legacy = {
+  readonly load: Load;
+  quarantined: boolean;
+  revision: number;
+  loading?: LegacyLoad;
+  loadController?: AbortController;
+  recovery?: Recovery;
+};
 type Owner = {
   readonly session: string;
   readonly mode: ReplayMode;
@@ -63,10 +71,10 @@ type Owner = {
   controller?: AbortController;
   timer?: ReturnType<typeof setTimeout>;
   wake?: () => void;
-  /** The live stream and its applied frontier: a frame counts as applied only once `lastSeq` holds its number. */
+  /** The joined stream id, and (in sequenced mode) its applied frontier. */
   streamId?: string;
   lastSeq: number;
-  /** Rejoins in a row spent from the REJOIN_LIMIT budget; an ordinary join resets it. */
+  /** Automatic rejoins spent without progress; explicit retries get a fresh budget. */
   rejoinCycles: number;
   joining: boolean;
   suspended: boolean;
@@ -83,6 +91,9 @@ type Owner = {
 const RETRY_DELAYS = [0, 500, 1_000, 2_000, 4_000, 8_000] as const;
 // Automatic rejoins that cannot make progress (a stale older page, an unreadable live payload) share one budget.
 const REJOIN_LIMIT = 3;
+class StreamEndLimit extends Error {
+  constructor() { super("replay stream kept ending before a load could commit"); }
+}
 const PAGE_TIMEOUT_MS = 15_000;
 const JOIN_FAILED = { phase: "failed", message: "could not join live updates", retryable: true } as const;
 const rpcCode = (error: unknown, code: string) => {
@@ -229,6 +240,35 @@ export function createReplayRegistry(deps: {
   const violation = (message: string) => call(() => deps.protocolViolation(message));
 
   // Legacy mode: `replay`, `replayRevision`, `finishReplay`, and store recovery for one generation.
+  const beginLegacyLoad = (owner: Owner, legacy: Legacy, signal: AbortSignal) => {
+    owner.streamId = undefined;
+    legacy.loading = { ended: false };
+    return legacy.load(signal); // host code: outside; README row "load(signal)"
+  };
+  const retryEndedLoad = (owner: Owner, legacy: Legacy) => {
+    const ended = legacy.loading?.ended;
+    legacy.loading = undefined;
+    if (!ended) return false;
+    // A matching end during history loading invalidates that snapshot. Keep the current store and try again.
+    if (owner.rejoinCycles >= REJOIN_LIMIT) throw new StreamEndLimit();
+    owner.rejoinCycles++;
+    return true;
+  };
+  const captureLegacyJoin = (session: string) => {
+    const owner = owners.get(session);
+    const legacy = owner?.legacy;
+    const attempt = legacy?.loading;
+    if (!owner || !legacy || !attempt) return undefined;
+    // The old stream's `rejoined` end precedes this reply, even if the server rejects the new join.
+    owner.streamId = undefined;
+    return (result: unknown) => {
+      if (owners.get(session) !== owner || owner.legacy !== legacy || legacy.loading !== attempt) return;
+      const streamId = (result as { replay?: { stream_id?: unknown } } | null)?.replay?.stream_id;
+      if (typeof streamId !== "string" || !streamId) return;
+      owner.streamId = streamId;
+      attempt.ended = false;
+    };
+  };
   const replayLegacy = async (session: string, load: Load, keepQuarantined = false): Promise<SessionLease> => {
     const owner = acquire(session, "legacy");
     deps.storeStep(session, { kind: "replay" });
@@ -237,9 +277,14 @@ export function createReplayRegistry(deps: {
     const controller = new AbortController();
     const legacy: Legacy = { load, quarantined: true, revision: 0, loadController: controller };
     owner.legacy = legacy;
+    owner.rejoinCycles = 0;
     try {
-      const history = await load(controller.signal); // host code: outside; README row "load(signal)"
-      if (controller.signal.aborted || !active(owner, generation)) throw abortError();
+      let history: RunEvent[];
+      do {
+        history = await beginLegacyLoad(owner, legacy, controller.signal);
+        if (controller.signal.aborted || !active(owner, generation)) throw abortError();
+      } while (retryEndedLoad(owner, legacy));
+      owner.rejoinCycles = 0;
       const store = deps.makeStore(session);
       owner.store = store;
       // The store shown so far stays until now; the install disposes it once no view holds it.
@@ -255,7 +300,10 @@ export function createReplayRegistry(deps: {
       if (!keepQuarantined) endQuarantine(legacy);
       return lease;
     } catch (error) {
-      if (owner.legacy === legacy) owner.legacy = undefined;
+      if (owner.legacy === legacy) {
+        owner.streamId = undefined;
+        owner.legacy = undefined;
+      }
       releaseLease(owner);
       throw error;
     }
@@ -273,11 +321,12 @@ export function createReplayRegistry(deps: {
     recovery.wake = resolve;
     recovery.timer = setTimeout(resolve, delay);
   });
-  const recoverLegacy = async (owner: Owner, legacy: Legacy, target: SessionStore) => {
+  const recoverLegacy = async (owner: Owner, legacy: Legacy, target: SessionStore, automatic = false) => {
     cancelRecovery(legacy);
     const recovery: Recovery = { canceled: false };
     legacy.recovery = recovery;
     legacy.quarantined = true;
+    if (!automatic) owner.rejoinCycles = 0;
     let failure: unknown;
     try {
       for (const delay of RETRY_DELAYS) {
@@ -290,19 +339,27 @@ export function createReplayRegistry(deps: {
         try {
           const controller = new AbortController();
           recovery.controller = controller;
-          // A throw, or a value that cannot be iterated, is a load failure here, not a listener error.
-          const history = [...await legacy.load(controller.signal)]; // host code: outside; README row "load(signal)"
+          let history: RunEvent[];
+          do {
+            // A value that cannot be iterated is a load failure here, not a listener error.
+            history = [...await beginLegacyLoad(owner, legacy, controller.signal)];
+            if (recovery.canceled || owner.store !== target) return;
+          } while (retryEndedLoad(owner, legacy));
           recovery.controller = undefined;
-          if (recovery.canceled || owner.store !== target) return;
+          owner.rejoinCycles = 0;
           call(() => target.resync(history));
-          legacy.quarantined = false;
+          if (legacy.recovery === recovery) legacy.quarantined = false;
           return;
         } catch (error) {
           if (recovery.canceled) return;
           recovery.controller = undefined;
+          legacy.loading = undefined;
+          owner.streamId = undefined;
           failure = error;
+          if (error instanceof StreamEndLimit) break;
         }
       }
+      owner.streamId = undefined;
       if (owner.store === target) call(() => target.resyncFailed(failure));
       throw failure;
     } finally {
@@ -437,14 +494,15 @@ export function createReplayRegistry(deps: {
       if (owner.controller === controller) owner.controller = undefined;
     }
   };
-  /** Starts a fresh atomic join in a new generation of the same owner; the committed store stays readable. */
   /** Spends one rejoin from the budget, or, when it is spent, retires the stream so state and routing agree it stopped. */
   const rejoinOrStop = (owner: Owner, generation: number, history: ReplayHistoryState) => {
     if (owner.rejoinCycles < REJOIN_LIMIT) return supersede(owner, owner.rejoinCycles + 1);
     finishHistory(owner, generation);
     cancel(owner);
-    publish(owner, generation, { replay: JOIN_FAILED, history, approvals: owner.state.approvals });
+    const settledHistory = history.phase === "loading" ? { ...history, phase: "incomplete", reason: "stale_limit" } as const : history;
+    publish(owner, generation, { replay: JOIN_FAILED, history: settledHistory, approvals: owner.state.approvals });
   };
+  /** Starts a fresh atomic join in a new generation of the same owner; the committed store stays readable. */
   const supersede = (owner: Owner, rejoinCycles = 0, historyRetry = false) => {
     cancel(owner);
     owner.generation++;
@@ -503,7 +561,7 @@ export function createReplayRegistry(deps: {
     const streamId = owner.streamId;
     if (activeSequencedOwner !== owner || owner.suspended || streamId === undefined) return;
     if (params.event === "replay_stream_ended") {
-      if (params.stream_id === streamId) supersede(owner);
+      if (params.stream_id === streamId) rejoinOrStop(owner, owner.generation, owner.state.history);
       return;
     }
     if (owner.state.replay.phase !== "joined") return;
@@ -527,23 +585,37 @@ export function createReplayRegistry(deps: {
     // Advancing the frontier is what counts the frame as applied, so it happens only after every event reduced. No
     // publish: a text delta changes the store, which batches its own notifications, not the replay state.
     owner.lastSeq = params.seq;
+    owner.rejoinCycles = 0; // A committed join that delivers live updates has made progress.
   };
   /** Takes an owned session's frame. Returns false when the frame should use ordinary routing. */
   const route = (params: EventParams) => {
     const owner = typeof params.session_id === "string" ? owners.get(params.session_id) : undefined;
-    if (!owner) return false;
+    if (!owner) return params.event === "replay_stream_ended";
     if (owner.mode === "sequenced") {
       routeSequenced(owner, params);
       return true;
     }
-    if (!owner.legacy?.quarantined) return false;
-    owner.legacy.revision++;
+    const legacy = owner.legacy;
+    // Control frames never enter the timeline or dirty legacy quarantine. Only this load's own stream can restart it.
+    if (params.event === "replay_stream_ended") {
+      if (!legacy || owner.streamId === undefined || owner.streamId !== params.stream_id) return true;
+      owner.streamId = undefined;
+      if (legacy.loading) legacy.loading.ended = true;
+      else if (owner.store) {
+        owner.rejoinCycles++;
+        void recoverLegacy(owner, legacy, owner.store, true).catch(() => {});
+      }
+      return true;
+    }
+    if (!legacy?.quarantined) return false;
+    legacy.revision++;
     return true;
   };
 
   return {
     openSessionReplay,
     route,
+    captureLegacyJoin,
     replay: replayLegacy,
     replayRevision: (session: string) => legacyOf(session)?.revision ?? 0,
     /** Opens live routing only if no event arrived after `revision` was captured. */
@@ -559,7 +631,9 @@ export function createReplayRegistry(deps: {
       const owner = owners.get(session);
       if (!owner?.store || (store && owner.store !== store)) return undefined;
       if (owner.mode === "sequenced") return void supersede(owner), Promise.resolve();
-      return owner.legacy ? recoverLegacy(owner, owner.legacy, owner.store) : undefined;
+      const legacy = owner.legacy;
+      if (!legacy || (legacy.loading && !legacy.recovery)) return undefined;
+      return recoverLegacy(owner, legacy, owner.store);
     },
     prepareEvict(session: string) {
       const owner = owners.get(session);

@@ -765,6 +765,145 @@ test("retryHistory supersedes the walk with one fresh join and a fresh page walk
   expect(fake.joins()).toHaveLength(3);
 });
 
+const streamEnd = (fake: Harness, stream: string, reason = "evicted") =>
+  fake.event({ event: "replay_stream_ended", session_id: "session-a", stream_id: stream, reason });
+const legacyLoader = (fake: Harness) => async (signal: AbortSignal) => {
+  const result = await fake.client.request("session_history_and_subscribe", { session_id: "session-a" }, { signal }) as ReturnType<typeof joinResult>;
+  return fromZetaHistory(result.messages);
+};
+const replyReplayJoin = (fake: Harness, stream: string, text: string) =>
+  fake.reply(fake.joins().at(-1)!.id, joinResult({ messages: [row(text, text)], replay: { stream_id: stream, history_seq: 0 } }));
+
+test("stream end regression: an unowned session never gets a timeline row", async () => {
+  const fake = harness();
+  await fake.ready;
+  const lease = fake.client.forSession("session-a");
+  try {
+    streamEnd(fake, "stream-a");
+    expect(lease.store.getOutline(), "an unowned stream end is not a row").toHaveLength(0);
+    expect(fake.joins()).toHaveLength(0);
+  } finally { lease.release(); }
+});
+
+test("stream end regression: a matching legacy stream reloads in place and committed loads refill the budget", async () => {
+  const fake = harness();
+  await fake.ready;
+  const opening = fake.client.replay("session-a", legacyLoader(fake));
+  replyReplayJoin(fake, "stream-a", "original");
+  const lease = await opening;
+  try {
+    streamEnd(fake, "stream-a");
+    await flush();
+    expect(fake.joins(), "a matching end starts one legacy reload").toHaveLength(2);
+    expect(lease.store.getOutline()).toHaveLength(1);
+    expect(outlineText(fake.client)).toEqual(["original"]);
+    replyReplayJoin(fake, "stream-b", "replacement");
+    await flush();
+    fake.event(delta(1, "live", "stream-b"));
+    expect(outlineText(fake.client)).toEqual(["replacement", "live"]);
+    expect(lease.store.getOutline()).toHaveLength(2);
+
+    let stream = "stream-b";
+    for (const [index, reason] of ["session_replaced", "future_reason", "evicted", "rejoined"].entries()) {
+      streamEnd(fake, stream, reason);
+      expect(fake.joins(), "a committed legacy load counts as progress").toHaveLength(index + 3);
+      stream = `stream-${index + 1}`;
+      replyReplayJoin(fake, stream, "next");
+      await flush();
+    }
+
+    streamEnd(fake, stream);
+    for (const next of ["storm-1", "storm-2", "storm-3"]) {
+      replyReplayJoin(fake, next, "uncommitted");
+      streamEnd(fake, next);
+      await flush();
+    }
+    expect(fake.joins()).toHaveLength(9);
+    expect(lease.store.getDiagnostics()).toMatchObject({ desynced: true, resyncError: "replay stream kept ending before a load could commit" });
+    expect(outlineText(fake.client)).toEqual(["next"]);
+    const retry = fake.client.retrySession("session-a");
+    replyReplayJoin(fake, "retried", "retried");
+    await retry;
+    expect(lease.store.getDiagnostics().desynced).toBe(false);
+    expect(outlineText(fake.client)).toEqual(["retried"]);
+  } finally { lease.release(); }
+});
+
+test("stream end regression: the legacy reload's own rejoined end is ignored during quarantine", async () => {
+  const fake = harness();
+  await fake.ready;
+  const opening = fake.client.replay("session-a", legacyLoader(fake));
+  replyReplayJoin(fake, "stream-a", "original");
+  const lease = await opening;
+  try {
+    // The reply for the explicit reload comes after the server ends the old stream.
+    const retry = fake.client.retrySession("session-a");
+    streamEnd(fake, "stream-a", "rejoined");
+    expect(fake.client.replayRevision("session-a"), "the reload's retired stream does not dirty quarantine").toBe(0);
+    replyReplayJoin(fake, "stream-b", "replacement");
+    await retry;
+    expect(fake.joins()).toHaveLength(2);
+    expect(outlineText(fake.client)).toEqual(["replacement"]);
+  } finally { lease.release(); }
+});
+
+test("stream end regression: a foreign stream does not reload or add a row to a legacy session", async () => {
+  const fake = harness();
+  await fake.ready;
+  const opening = fake.client.replay("session-a", legacyLoader(fake));
+  replyReplayJoin(fake, "stream-a", "original");
+  const lease = await opening;
+  try {
+    streamEnd(fake, "foreign");
+    expect(fake.joins()).toHaveLength(1);
+    expect(lease.store.getOutline(), "a foreign end cannot change the transcript").toHaveLength(1);
+  } finally { lease.release(); }
+});
+
+test("stream end regression: an immediate legacy end targets the join before the first load commits", async () => {
+  const fake = harness();
+  await fake.ready;
+  try {
+    const opening = fake.client.replay("session-a", legacyLoader(fake));
+    void opening.catch(() => {});
+    replyReplayJoin(fake, "stream-a", "ended before commit");
+    streamEnd(fake, "stream-a");
+    await flush();
+    expect(fake.joins(), "an end after the reply but before the first commit still rejoins").toHaveLength(2);
+    for (const stream of ["stream-b", "stream-c", "stream-d"]) {
+      replyReplayJoin(fake, stream, "ended before commit");
+      streamEnd(fake, stream);
+      await flush();
+    }
+    expect(fake.joins(), "three automatic reloads without a commit exhaust the budget").toHaveLength(4);
+    await expect(opening).rejects.toThrow("replay stream kept ending");
+  } finally { fake.client.close(); }
+});
+
+test("stream end regression: sequenced replay refills the budget on live frames and fails visibly without progress", async () => {
+  const fake = harness();
+  await fake.ready;
+  const lease = await joined(fake);
+  try {
+    for (let index = 0; index < 6; index++) {
+      const stream = index === 0 ? "stream-a" : `stream-${index}`;
+      if (index < 4) fake.event(delta(1, "live", stream));
+      streamEnd(fake, stream);
+      await flush();
+      expect(fake.joins()).toHaveLength(index + 2);
+      replyReplayJoin(fake, `stream-${index + 1}`, "replacement");
+      await flush();
+    }
+    streamEnd(fake, "stream-6");
+    await flush();
+    expect(lease.state.replay, "an end storm stops with a visible retryable failure").toMatchObject({ phase: "failed", retryable: true });
+    expect(fake.joins()).toHaveLength(7);
+    lease.retry();
+    await flush();
+    expect(fake.joins()).toHaveLength(8);
+  } finally { lease.release(); }
+});
+
 // #154 and design 4.3. Fail-first on c172a6a: the superseded load's failure cleared the new replay's quarantine.
 test("a same-session legacy retry keeps the displayed store until its own load commits; late old work changes nothing", async () => {
   const fake = harness();

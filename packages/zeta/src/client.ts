@@ -418,11 +418,18 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     return new Promise<unknown>((resolve, reject) => {
       const id = nextId++;
       const abort = () => settle(id, (item) => item.reject(Object.assign(new Error("request aborted"), { name: "AbortError" }))); // host code: outside; README row "client functions held as values"
-      const item: Pending = { resolve, reject };
+      const session = typeof params.session_id === "string" ? params.session_id : undefined;
+      const joinReply = method === "session_history_and_subscribe" && session !== undefined
+        ? replayRegistry?.captureLegacyJoin(session) : undefined;
+      const item: Pending = { resolve: joinReply ? (result) => {
+        // Record the stream before a following end frame can arrive, not in the loader's promise continuation.
+        call(() => joinReply(result));
+        resolve(result);
+      } : resolve, reject };
       pending.set(id, item);
       deliveryIdentity.track(id, {
         method,
-        sessionId: typeof params.session_id === "string" ? params.session_id : undefined,
+        sessionId: session,
         intent: requestOptions.intent,
         text: params.text,
         deliveryId: typeof params.delivery_id === "string" ? params.delivery_id : undefined,

@@ -298,6 +298,7 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
   try {
     const wire = object(value, "event");
     const name = string(wire.event, "event");
+    if (name === "replay_stream_ended") return []; // replay control, not a timeline event
     optionalString(wire.session_id, "session_id");
     const data = optionalObject(wire.data, "data") ?? {};
     const notification = childNotification(name, data);

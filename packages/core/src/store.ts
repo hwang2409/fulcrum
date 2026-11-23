@@ -438,9 +438,11 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       diagnosticsListeners.add(listener);
       return () => diagnosticsListeners.delete(listener);
     },
+    /** Records a failed resync, including one requested externally before the store knew it was out of sync. */
     resyncFailed(error: unknown) {
-      if (!desynced || disposed) return;
-      setDiagnostics({ ...diagnostics, resyncError: errorMessage(error) });
+      if (disposed) return;
+      desynced = true;
+      setDiagnostics({ ...diagnostics, desynced, resyncError: errorMessage(error) });
       report();
     },
     /**
