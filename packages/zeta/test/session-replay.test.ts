@@ -417,18 +417,29 @@ test("an already-aborted navigation never sends a join", async () => {
   expect(fake.sent).toHaveLength(0);
 });
 
-// Fail-first on c172a6a: the end arrived before the join's continuation ran, met no stream id, and was lost.
-test("a stream end right after the join reply waits for that join and then rejoins once", async () => {
+// An end can arrive before the promise continuation commits the join reply.
+test("a sequenced stream end right after the join reply retries, then stops if no replacement becomes usable", async () => {
   const fake = harness();
   await fake.ready;
   const open = fake.client.openSessionReplay("session-a");
   await waitFor(() => fake.joins().length === 1);
-  fake.reply(fake.joins()[0]!.id, joinResult());
-  fake.event({ event: "replay_stream_ended", session_id: "session-a", stream_id: "stream-a", reason: "evicted" });
-  await open;
-  await Bun.sleep(1);
-
-  expect(fake.joins()).toHaveLength(2);
+  replyReplayJoin(fake, "stream-a", "first");
+  streamEnd(fake, "stream-a");
+  const lease = await open;
+  try {
+    await flush();
+    expect(fake.joins()).toHaveLength(2);
+    for (const stream of ["stream-b", "stream-c", "stream-d"]) {
+      replyReplayJoin(fake, stream, "replacement");
+      streamEnd(fake, stream);
+      await flush();
+    }
+    expect(fake.joins()).toHaveLength(4);
+    expect(lease.state.replay).toMatchObject({ phase: "failed", retryable: true });
+    lease.retry();
+    await flush();
+    expect(fake.joins()).toHaveLength(5);
+  } finally { lease.release(); }
 });
 
 test("a frame that arrives while the join reply is settling applies once the join commits", async () => {
@@ -767,8 +778,8 @@ test("retryHistory supersedes the walk with one fresh join and a fresh page walk
 
 const streamEnd = (fake: Harness, stream: string, reason = "evicted") =>
   fake.event({ event: "replay_stream_ended", session_id: "session-a", stream_id: stream, reason });
-const legacyLoader = (fake: Harness) => async (signal: AbortSignal) => {
-  const result = await fake.client.request("session_history_and_subscribe", { session_id: "session-a" }, { signal }) as ReturnType<typeof joinResult>;
+const legacyLoader = (fake: Harness, session = "session-a") => async (signal: AbortSignal) => {
+  const result = await fake.client.request("session_history_and_subscribe", { session_id: session }, { signal }) as ReturnType<typeof joinResult>;
   return fromZetaHistory(result.messages);
 };
 const replyReplayJoin = (fake: Harness, stream: string, text: string) =>
@@ -880,28 +891,47 @@ test("stream end regression: an immediate legacy end targets the join before the
   } finally { fake.client.close(); }
 });
 
-test("stream end regression: sequenced replay refills the budget on live frames and fails visibly without progress", async () => {
+test("stream end regression: committed sequenced replacements refill the budget without live frames", async () => {
   const fake = harness();
   await fake.ready;
   const lease = await joined(fake);
   try {
-    for (let index = 0; index < 6; index++) {
-      const stream = index === 0 ? "stream-a" : `stream-${index}`;
-      if (index < 4) fake.event(delta(1, "live", stream));
+    let stream = "stream-a";
+    for (let index = 0; index < 5; index++) {
       streamEnd(fake, stream);
       await flush();
-      expect(fake.joins()).toHaveLength(index + 2);
-      replyReplayJoin(fake, `stream-${index + 1}`, "replacement");
+      expect(fake.joins(), "a committed replacement counts as progress without live frames").toHaveLength(index + 2);
+      stream = `stream-${index}`;
+      replyReplayJoin(fake, stream, "replacement");
       await flush();
+      expect(lease.state.replay).toEqual({ phase: "joined", streamId: stream });
     }
-    streamEnd(fake, "stream-6");
-    await flush();
-    expect(lease.state.replay, "an end storm stops with a visible retryable failure").toMatchObject({ phase: "failed", retryable: true });
-    expect(fake.joins()).toHaveLength(7);
-    lease.retry();
-    await flush();
-    expect(fake.joins()).toHaveLength(8);
   } finally { lease.release(); }
+});
+
+test("stream end regression: only the latest legacy join on the connection can rejoin", async () => {
+  const fake = harness();
+  await fake.ready;
+  const a = fake.client.replay("session-a", legacyLoader(fake));
+  replyReplayJoin(fake, "stream-a", "first transcript");
+  const first = await a;
+  try {
+    const b = fake.client.replay("session-b", legacyLoader(fake, "session-b"));
+    void b.catch(() => {});
+    streamEnd(fake, "stream-a", "rejoined"); // The server ends a before it replies to b.
+    expect(fake.joins().map(({ params }) => params.session_id), "starting b must not send another join for a").toEqual(["session-a", "session-b"]);
+    replyReplayJoin(fake, "stream-b", "second transcript");
+    const second = await b;
+    try {
+      fake.event({ event: "replay_stream_ended", session_id: "session-b", stream_id: "stream-b", reason: "evicted" });
+      expect(fake.joins().map(({ params }) => params.session_id)).toEqual(["session-a", "session-b", "session-b"]);
+      replyReplayJoin(fake, "stream-c", "second replacement");
+      await flush();
+      expect(outlineText(fake.client, "session-a")).toEqual(["first transcript"]);
+      expect(first.store.getOutline()).toHaveLength(1);
+      expect(outlineText(fake.client, "session-b")).toEqual(["second replacement"]);
+    } finally { second.release(); }
+  } finally { first.release(); fake.client.close(); }
 });
 
 // #154 and design 4.3. Fail-first on c172a6a: the superseded load's failure cleared the new replay's quarantine.
@@ -1115,20 +1145,22 @@ test.each(["second-join-stale-after-begin", "pending-join-reset"])("matrix %s: a
   }
 });
 
-test("matrix join-rejected-before-validation: a rejected raw join leaves the owner, stream, frontier, and store unchanged", async () => {
+test("matrix join-rejected-before-validation: a rejected raw join ends the old stream without restarting it", async () => {
   const fake = harness();
   await fake.ready;
   const lease = await joined(fake, { messages: [row("one", "one")] });
   const store = lease.store;
   const raw = fake.client.request("session_history_and_subscribe", {});
+  streamEnd(fake, "stream-a", "rejoined");
   fake.fail(fake.sent.at(-1)!.id, -32602);
   await expect(raw).rejects.toMatchObject({ code: -32602 });
   fake.event(delta(1, "next"));
 
-  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a" });
-  expect(lease.lastSeq).toBe(1);
+  expect(lease.state.replay).toEqual({ phase: "suspended" });
+  expect(lease.lastSeq).toBe(0);
+  expect(fake.joins()).toHaveLength(2);
   expect(fake.client.stores.get("session-a")).toBe(store);
-  expect(outlineText(fake.client)).toEqual(["one", "next"]);
+  expect(outlineText(fake.client)).toEqual(["one"]);
 });
 
 test("matrix accepted-resume-other: selecting another session suspends the first before the second joins", async () => {

@@ -419,8 +419,8 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       const id = nextId++;
       const abort = () => settle(id, (item) => item.reject(Object.assign(new Error("request aborted"), { name: "AbortError" }))); // host code: outside; README row "client functions held as values"
       const session = typeof params.session_id === "string" ? params.session_id : undefined;
-      const joinReply = method === "session_history_and_subscribe" && session !== undefined
-        ? replayRegistry?.captureLegacyJoin(session) : undefined;
+      const joinReply = method === "session_history_and_subscribe"
+        ? replayRegistry?.beginJoinRequest(session, requestOptions.signal) : undefined;
       const item: Pending = { resolve: joinReply ? (result) => {
         // Record the stream before a following end frame can arrive, not in the loader's promise continuation.
         call(() => joinReply(result));
