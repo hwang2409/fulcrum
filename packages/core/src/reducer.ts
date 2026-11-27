@@ -53,7 +53,6 @@ const toolItemId = (id: string) => `tool:${id}`;
 const approvalItemId = (id: string) => `approval:${id}`;
 
 const terminalSubAgentStatuses = new Set(["done", "error", "canceled"]);
-const waitingSubAgentStatuses = new Set(["waiting_approval", "waiting_input"]);
 const subAgentTime = (event: SubAgentEvent) => {
   const value = event.endedAt ?? event.updatedAt ?? event.startedAt;
   if (!value) return undefined;
@@ -77,6 +76,9 @@ type SubAgentItem = Extract<RunItem, { type: "sub_agent" }>;
  *   terminal event fills in its facts (a receipt's summary, an end time) but keeps the row's outcome unless it is newer.
  *   When a receipt and an end event disagree, the end event wins only when it has a known order against the row; a
  *   receipt-only row keeps the receipt's outcome.
+ * - An open question (`waiting_input`) and its label stay against a snapshot that is not newer by a known order: a child
+ *   keeps working while its question waits. Its answer, its withdrawal, or the run's end clears it. Any other status,
+ *   `waiting_approval` too, follows the snapshot: a child blocked on an approval reports that wait in its snapshots.
  * - A known task is never replaced: a child's task is fixed for its life, so a later event cannot overwrite it.
  * - A terminal row has no latest activity: the source can leave its last step stale, and the summary is the outcome.
  */
@@ -90,8 +92,9 @@ const mergeSubAgent = (prior: SubAgentItem | undefined, event: SubAgentEvent, id
     const eventTerminal = terminalSubAgentStatuses.has(event.status);
     if (order === -1 || (priorTerminal && !eventTerminal && order !== 1)) return undefined;
     const toolCount = prior.toolCount === undefined || event.toolCount === undefined ? event.toolCount ?? prior.toolCount : Math.max(prior.toolCount, event.toolCount);
-    const keepStatus = priorTerminal ? order !== 1 : snapshot && waitingSubAgentStatuses.has(prior.status) && !eventTerminal;
+    const keepStatus = priorTerminal ? order !== 1 : snapshot && prior.status === "waiting_input" && !eventTerminal && order !== 1;
     row = { ...prior, ...update, id, task: prior.task ?? update.task, toolCount, ...(keepStatus ? { status: prior.status, urgency: prior.urgency } : { urgency: event.urgency }) };
+    if (keepStatus && prior.latestActivity !== undefined) row.latestActivity = prior.latestActivity;
   }
   if (!terminalSubAgentStatuses.has(row.status)) return row;
   const { latestActivity: _stale, ...terminal } = row;

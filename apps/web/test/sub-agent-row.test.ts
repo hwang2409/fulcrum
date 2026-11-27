@@ -109,3 +109,59 @@ test.each(Object.keys(waiting))("a child's question keeps its task, not the noti
   const withdrawn = name.includes("withdrawn");
   expect(rowOf(waiting[name]!())).toMatchObject({ status: withdrawn ? "running" : "needs input", task: "count lines" });
 });
+
+// A child's tool approval: its step names the wait while it is blocked (runner.py:191), the request carries the child's
+// id, and the end names only the request (approval_lifecycle.py:407). History puts the child's newest snapshot right
+// after child_started, before its approval rows (session_replay/children.py `with_baseline`).
+const read = { id: "c1", name: "read", arguments: { path: "notes.txt" } };
+const step = (text: string) => child("running", { current_step: text });
+const approval = {
+  request: () => ({ event: "approval_request", session_id: "p", request_id: "r1", tool_call: read, delegated: true, agent_instance_id: "p:1" }),
+  end: (decision: string) => ({ event: "approval_end", session_id: "p", request_id: "r1", tool_call: read, data: { decision } }),
+};
+const liveStep = (text: string, revision: number) => ({ ...live.progress(), revision, child: step(text) });
+const historyStep = (text: string) => ({ ...history.progress(), child: step(text) });
+const liveApproval = (decision: string) => [
+  live.started(), liveStep("turn 1: approval pending: read", 2), approval.request(), approval.end(decision),
+  liveStep(decision === "allow" ? "turn 1: tool: read {}" : "turn 2: thinking", 3),
+];
+const waits: Record<string, { events: () => RunEvent[]; status: string; activity?: string }> = {
+  "live: approval pending": { events: () => fromLive(liveApproval("allow").slice(0, 3)), status: "needs approval", activity: "turn 1: approval pending: read" },
+  "live: approval allowed, then the child works": { events: () => fromLive(liveApproval("allow")), status: "running", activity: "turn 1: tool: read {}" },
+  "live: approval denied, then the child works": { events: () => fromLive(liveApproval("deny")), status: "running", activity: "turn 2: thinking" },
+  "live: approval allowed, child ended before its receipt": { events: () => fromLive([...liveApproval("allow"), live.ended("completed")]), status: "done" },
+  "live: approval allowed, child ended, receipt": { events: () => fromLive([...liveApproval("allow"), live.ended("completed"), live.receipt("completed")]), status: "done", activity: "child reply 0" },
+  "history: approval resolved, child still running": {
+    events: () => fromZetaHistory([history.started(), historyStep("turn 2: thinking"), approval.request(), approval.end("allow")]),
+    status: "running", activity: "turn 2: thinking",
+  },
+  "history: approval still pending": {
+    events: () => fromZetaHistory([history.started(), historyStep("turn 1: approval pending: read"), approval.request()]),
+    status: "needs approval", activity: "turn 1: approval pending: read",
+  },
+  "history: approval resolved, child ended, receipt": {
+    events: () => fromZetaHistory([history.started(), historyStep("turn 2: thinking"), approval.request(), approval.end("allow"), history.ended("completed"), history.receipt("completed")]),
+    status: "done", activity: "child reply 0",
+  },
+  "history: approval resolved, child ended before its receipt": {
+    events: () => fromZetaHistory([history.started(), historyStep("turn 2: thinking"), approval.request(), approval.end("allow"), history.ended("completed")]),
+    status: "done",
+  },
+  // The child keeps working while its question waits: its snapshots do not end the wait.
+  "live: question, then the child works": { events: () => fromLive([live.started(), liveQuestion(false), liveStep("turn 2: thinking", 3)]), status: "needs input", activity: "which dir?" },
+  "live: question answered": {
+    events: () => fromLive([live.started(), liveQuestion(false), { event: "child_message_delivered", session_id: "p", data: { agent_instance_id: "p:1", child_label: "p:1", preview: "use src" } }, liveStep("turn 2: thinking", 3)]),
+    status: "running", activity: "turn 2: thinking",
+  },
+  "live: question withdrawn": { events: () => fromLive([live.started(), liveQuestion(false), liveQuestion(true), liveStep("turn 2: thinking", 3)]), status: "running", activity: "turn 2: thinking" },
+  "live: question, child ended before its receipt": { events: () => fromLive([live.started(), liveQuestion(false), live.ended("completed")]), status: "done" },
+  "live: answered, child ended before its receipt": {
+    events: () => fromLive([live.started(), liveQuestion(false), { event: "child_message_delivered", session_id: "p", data: { agent_instance_id: "p:1", child_label: "p:1", preview: "use src" } }, live.ended("completed")]),
+    status: "done",
+  },
+};
+test.each(Object.keys(waits))("a wait shows while it lasts and never becomes the summary: %s", (name) => {
+  const { events, status, activity } = waits[name]!;
+  const row = rowOf(events());
+  expect({ status: row.status, activity: row.activity }).toEqual({ status, activity });
+});

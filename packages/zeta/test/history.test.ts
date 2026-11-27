@@ -453,11 +453,11 @@ test("a child-run state this adapter does not know reads as live, or done once e
   expect([...event("child_started"), ...event("child_progress"), ...event("child_ended")].map((e) => e.type === "sub_agent" && e.status)).toEqual(["running", "running", "done"]);
 });
 
-test("a child-run snapshot keeps a pending question until the parent answers", () => {
+test("a child-run snapshot keeps a pending question and its text until the parent answers", () => {
   const question = fromZetaEvent({ event: "child_question", data: { child_instance_id: "parent:1", question_id: "q", question: "continue?", notification_id: "n-q" } });
   const progress = fromZetaEvent({ event: "child_progress", run_id: "parent:1", sequence: 1, revision: 2, child: childRow("running", { tool_count: 1, current_step: "$ ls" }) });
   expect(childItems([...question, ...progress])).toEqual([
-    expect.objectContaining({ status: "waiting_input", urgency: "input", toolCount: 1, latestActivity: "$ ls" }),
+    expect.objectContaining({ status: "waiting_input", urgency: "input", toolCount: 1, latestActivity: "continue?" }),
   ]);
   const answered = fromZetaEvent({ event: "child_message_delivered", data: { agent_instance_id: "parent:1", preview: "yes" } });
   expect(childItems([...question, ...progress, ...answered])).toEqual([expect.objectContaining({ status: "running", urgency: undefined })]);
