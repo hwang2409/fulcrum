@@ -123,6 +123,16 @@ test("subAgentRow derives the badge, text, accessible name, and drill-in from th
   expect(subAgentRow(item({}), { open() {}, unavailable: () => "gone" }, 0)).toMatchObject({ canOpen: false, reason: "gone" });
 });
 
+test("a finished row shows its summary, not the stale last step its progress snapshots left", () => {
+  const { store } = storeOf([
+    child("a", { snapshot: true, latestActivity: "turn 2: thinking" }),
+    child("a", { status: "done", summary: "found 3 files" }),
+    child("a", { status: "done", snapshot: true, latestActivity: "turn 2: thinking" }),
+  ]);
+  const row = subAgentRow(store.getItem("sub-agent:a") as Parameters<typeof subAgentRow>[0], null, 0);
+  expect(row.activity).toBe("found 3 files");
+});
+
 // IntersectionObserver as the browser reports it, driven by the test; and the 1 s intervals that are running.
 function fakeVisibility() {
   const observers = new Set<{ callback: IntersectionObserverCallback; targets: Set<Element> }>();

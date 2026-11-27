@@ -448,6 +448,11 @@ test("live child-run lifecycle events update one clickable sub-agent row", () =>
   ]);
 });
 
+test("a child-run state this adapter does not know reads as live, or done once ended", () => {
+  const event = (name: string) => fromZetaEvent({ event: name, run_id: "parent:1", child: childRow("paused") });
+  expect([...event("child_started"), ...event("child_progress"), ...event("child_ended")].map((e) => e.type === "sub_agent" && e.status)).toEqual(["running", "running", "done"]);
+});
+
 test("a child-run snapshot keeps a pending question until the parent answers", () => {
   const question = fromZetaEvent({ event: "child_question", data: { child_instance_id: "parent:1", question_id: "q", question: "continue?", notification_id: "n-q" } });
   const progress = fromZetaEvent({ event: "child_progress", run_id: "parent:1", sequence: 1, revision: 2, child: childRow("running", { tool_count: 1, current_step: "$ ls" }) });
