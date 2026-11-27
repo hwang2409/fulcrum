@@ -177,13 +177,14 @@ const subAgent = (
   const updatedAt = timestamp(data, "updated_at");
   const endedAt = timestamp(data, "completed_at");
   const sequence = optionalNumber(data.sequence, "data.sequence");
+  // Only an ending carries the child's reply as the summary; a question is the activity while it waits.
+  const text = rowSummary === undefined ? {} : terminalStatuses.has(status) ? { summary: rowSummary } : status === "waiting_input" ? { latestActivity: rowSummary } : {};
   return {
     type: "sub_agent",
     childRunId: string(data[childKey], `data.${childKey}`),
     status,
     ...(task ? { task } : {}),
-    // Only an ending carries the child's reply as the summary; a question is the activity while it waits.
-    ...(rowSummary === undefined ? {} : terminalStatuses.has(status) ? { summary: rowSummary } : status === "waiting_input" ? { latestActivity: rowSummary } : {}),
+    ...text,
     ...(urgency ? { urgency } : {}),
     ...(notificationId ? { notificationId } : {}),
     ...(startedAt ? { startedAt } : {}),
@@ -196,19 +197,6 @@ const subAgent = (
 const completionStatus = (data: Record<string, unknown>): [SubAgentStatus, SubAgentUrgency?] => {
   switch (string(data.status, "data.status")) {
     case "completed": return ["done"];
-    case "error": return ["error", "error"];
-    case "canceled": return ["canceled"];
-    default: throw new Error("data.status is invalid");
-  }
-};
-
-const resumedStatus = (data: Record<string, unknown>): [SubAgentStatus, SubAgentUrgency?] => {
-  if (data.status === undefined) return ["running"];
-  switch (string(data.status, "data.status")) {
-    case "running": return ["running"];
-    case "idle": return ["idle"];
-    case "completed":
-    case "done": return ["done"];
     case "error": return ["error", "error"];
     case "canceled": return ["canceled"];
     default: throw new Error("data.status is invalid");
@@ -270,32 +258,28 @@ const childNotification = (name: string, data: Record<string, unknown>): RunEven
 const childRunStatuses: Record<string, [SubAgentStatus, SubAgentUrgency?]> = {
   running: ["running"], finishing: ["running"], idle: ["idle"], completed: ["done"], failed: ["error", "error"], canceled: ["canceled"],
 };
-// A child blocked on a tool approval names it in its step (zeta src/zeta/agent/runner.py:191).
-const approvalStep = /^turn \d+: approval pending: /;
 const label = (value: unknown, name: string) => value === "" || value === null ? undefined : optionalString(value, name);
 
 /**
  * `child_started`, `child_progress`, and `child_ended` (feature `child_run_events`) carry the child's whole run row, live
- * and as history rows. They are snapshots: they update the row but leave a pending question to its own events. A child
- * waiting for an approval is blocked and its step says so, so its snapshots report that wait and its end.
+ * and as history rows. They are snapshots: they update the row but leave a pending question or approval to its own events.
  */
 const childRunEvent = (name: string, wire: Record<string, unknown>): SubAgentEvent => {
   const child = object(wire.child, "child");
   const state = string(child.status, "child.status");
-  const step = label(child.current_step, "child.current_step");
   const [status, urgency] = Object.hasOwn(childRunStatuses, state) ? childRunStatuses[state]! : [name === "child_ended" ? "done" as const : "running" as const];
-  const [shown, shownUrgency] = status === "running" && step && approvalStep.test(step) ? ["waiting_approval" as const, "approval" as const] : [status, urgency];
   const agentType = label(child.agent_type, "child.agent_type");
   const task = label(child.description, "child.description");
+  const step = label(child.current_step, "child.current_step");
   const toolCount = optionalNumber(child.tool_count, "child.tool_count");
   const startedAt = label(child.started_at, "child.started_at");
   const endedAt = label(child.finished_at, "child.finished_at");
   return {
     type: "sub_agent",
     childRunId: string(wire.run_id, "run_id"),
-    status: shown,
+    status,
     snapshot: true,
-    ...(shownUrgency ? { urgency: shownUrgency } : {}),
+    ...(urgency ? { urgency } : {}),
     ...(agentType ? { name: agentType } : {}),
     ...(task ? { task } : {}),
     ...(step ? { latestActivity: step } : {}),
@@ -381,22 +365,19 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
         const call = tool(wire.tool_call);
         const state = wire.state === undefined ? undefined : string(wire.state, "state");
         if (state !== undefined && state !== "reconnecting" && state !== "resolving") throw new Error("state must be reconnecting or resolving");
-        const approval: RunEvent = {
+        const childRunId = optionalString(wire.agent_instance_id, "agent_instance_id");
+        return [{
           type: "approval_request", request_id: string(wire.request_id, "request_id"), tool_call: call, ...viewOf(call), delegated: boolean(wire.delegated, "delegated"),
           ...(state ? { state } : {}),
           ...(wire.status === undefined ? {} : { status: string(wire.status, "status") }),
           ...(wire.disabled_reason === undefined ? {} : { disabled_reason: string(wire.disabled_reason, "disabled_reason") }),
-        };
-        const childRunId = optionalString(wire.agent_instance_id, "agent_instance_id");
-        return childRunId ? [approval, subAgent({ ...data, child_instance_id: childRunId }, "waiting_approval", "approval")] : [approval];
+          ...(childRunId ? { childRunId } : {}),
+        }];
       }
       case "approval_end": {
         const decision = zetaDecisions.get(data.decision);
-        const approval: RunEvent = { type: "approval_end", request_id: string(wire.request_id, "request_id"), ...(decision ? { decision } : {}), data };
-        const childRunId = optionalString(data.agent_instance_id, "data.agent_instance_id");
-        if (!childRunId) return [approval];
-        const [status, urgency] = resumedStatus(data);
-        return [approval, subAgent({ ...data, child_instance_id: childRunId }, status, urgency)];
+        // zeta names the child only on the request (src/zeta/server/approval_lifecycle.py:382-419): the store pairs them.
+        return [{ type: "approval_end", request_id: string(wire.request_id, "request_id"), ...(decision ? { decision } : {}), data }];
       }
       case "usage": {
         // zeta keeps the provider's usage details (a service tier, nested cache counts) beside the token counts: the counts
@@ -480,7 +461,7 @@ const historyDeliveryStatus = (row: Record<string, unknown>, resent: Set<unknown
   return events;
 };
 
-const historyRow = (value: unknown, calls: Map<string, ToolCall>, resent: Set<unknown>, childApprovals: Map<string, string>): RunEvent[] => {
+const historyRow = (value: unknown, calls: Map<string, ToolCall>, resent: Set<unknown>): RunEvent[] => {
   const row = object(value, "history row");
   if (row.event === "usage") return fromZetaEvent(row);
   if (row.event === "delivery_status") return historyDeliveryStatus(row, resent);
@@ -496,13 +477,7 @@ const historyRow = (value: unknown, calls: Map<string, ToolCall>, resent: Set<un
     try { call = tool(row.tool_call); } catch { /* no usable call: the row still maps */ }
     const known = call && calls.get(call.id);
     if (call && known && !Object.keys(known.arguments).length && Object.keys(call.arguments).length) calls.set(call.id, call);
-    const events = fromZetaEvent(row);
-    const requestId = typeof row.request_id === "string" ? row.request_id : undefined;
-    if (requestId && row.event === "approval_request" && typeof row.agent_instance_id === "string") childApprovals.set(requestId, row.agent_instance_id);
-    // An approval_end names no child (zeta src/zeta/server/approval_lifecycle.py:407), and history puts the child's
-    // newest snapshot before its approval rows, so the end of a child's approval wait comes from its request's child.
-    const child = requestId && row.event === "approval_end" ? childApprovals.get(requestId) : undefined;
-    return child ? [...events, { type: "sub_agent", childRunId: child, status: "running", snapshot: true }] : events;
+    return fromZetaEvent(row);
   }
   const id = string(row.id, "history row id");
   const role = string(row.role, "history row role");
@@ -578,10 +553,9 @@ export function servedTurnOutcome(rows: readonly unknown[], turnId: string): Run
 export function fromZetaHistory(rows: readonly unknown[]): RunEvent[] {
   const calls = new Map<string, ToolCall>();
   const resent = resentDrops(rows);
-  const childApprovals = new Map<string, string>();
   return rows.flatMap((row) => {
     try {
-      return historyRow(row, calls, resent, childApprovals);
+      return historyRow(row, calls, resent);
     } catch (error) {
       return invalid(error);
     }

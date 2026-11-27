@@ -110,14 +110,15 @@ test.each(Object.keys(waiting))("a child's question keeps its task, not the noti
   expect(rowOf(waiting[name]!())).toMatchObject({ status: withdrawn ? "running" : "needs input", task: "count lines" });
 });
 
-// A child's tool approval: its step names the wait while it is blocked (runner.py:191), the request carries the child's
-// id, and the end names only the request (approval_lifecycle.py:407). History puts the child's newest snapshot right
+// A child's tool approval: the request carries the child's id, and the end names only the request
+// (approval_lifecycle.py:382-419); its step names the wait while it is blocked (runner.py:191). History puts the child's newest snapshot right
 // after child_started, before its approval rows (session_replay/children.py `with_baseline`).
 const read = { id: "c1", name: "read", arguments: { path: "notes.txt" } };
 const step = (text: string) => child("running", { current_step: text });
+const read2 = { id: "c2", name: "read", arguments: { path: "todo.txt" } };
 const approval = {
-  request: () => ({ event: "approval_request", session_id: "p", request_id: "r1", tool_call: read, delegated: true, agent_instance_id: "p:1" }),
-  end: (decision: string) => ({ event: "approval_end", session_id: "p", request_id: "r1", tool_call: read, data: { decision } }),
+  request: (id = "r1", call = read) => ({ event: "approval_request", session_id: "p", request_id: id, tool_call: call, delegated: true, agent_instance_id: "p:1" }),
+  end: (decision: string, id = "r1", call = read) => ({ event: "approval_end", session_id: "p", request_id: id, tool_call: call, data: { decision } }),
 };
 const liveStep = (text: string, revision: number) => ({ ...live.progress(), revision, child: step(text) });
 const historyStep = (text: string) => ({ ...history.progress(), child: step(text) });
@@ -125,7 +126,29 @@ const liveApproval = (decision: string) => [
   live.started(), liveStep("turn 1: approval pending: read", 2), approval.request(), approval.end(decision),
   liveStep(decision === "allow" ? "turn 1: tool: read {}" : "turn 2: thinking", 3),
 ];
+// A parallel batch gates each call on its own approval (zeta core/tool_dispatch.py:284-310): the child waits until the
+// last open request ends, whatever its step says meanwhile.
+const pending = "turn 1: approval pending: read";
+const liveTwoApprovals = [
+  live.started(), liveStep(pending, 2), approval.request(), liveStep(pending, 3), approval.request("r2", read2),
+  approval.end("allow"), liveStep("turn 1: tool: read {}", 4),
+];
+const liveBothAllowed = [...liveTwoApprovals, approval.end("allow", "r2", read2), liveStep("turn 1: tool: read {}", 5)];
+const historyTwoApprovals = [history.started(), historyStep("turn 1: tool: read {}"), approval.request(), approval.request("r2", read2), approval.end("allow")];
 const waits: Record<string, { events: () => RunEvent[]; status: string; activity?: string }> = {
+  "live: two approvals pending, one allowed": { events: () => fromLive(liveTwoApprovals), status: "needs approval", activity: "turn 1: tool: read {}" },
+  "live: two approvals pending, both allowed": { events: () => fromLive(liveBothAllowed), status: "running", activity: "turn 1: tool: read {}" },
+  "live: two approvals allowed, child ended": { events: () => fromLive([...liveBothAllowed, live.ended("completed")]), status: "done" },
+  "live: approval pending, an auto-allowed sibling tool starts": {
+    events: () => fromLive([live.started(), liveStep(pending, 2), approval.request(), liveStep("turn 1: tool: grep {}", 3)]),
+    status: "needs approval", activity: "turn 1: tool: grep {}",
+  },
+  // zeta publishes the request from authorize() before the runner publishes the pending step: the likely live order.
+  "live: request, then its pending step": { events: () => fromLive([live.started(), approval.request(), liveStep(pending, 2)]), status: "needs approval", activity: pending },
+  "history: two approvals pending, one resolved": { events: () => fromZetaHistory(historyTwoApprovals), status: "needs approval", activity: "turn 1: tool: read {}" },
+  "history: two approvals pending, both resolved": {
+    events: () => fromZetaHistory([...historyTwoApprovals, approval.end("allow", "r2", read2)]), status: "running", activity: "turn 1: tool: read {}",
+  },
   "live: approval pending": { events: () => fromLive(liveApproval("allow").slice(0, 3)), status: "needs approval", activity: "turn 1: approval pending: read" },
   "live: approval allowed, then the child works": { events: () => fromLive(liveApproval("allow")), status: "running", activity: "turn 1: tool: read {}" },
   "live: approval denied, then the child works": { events: () => fromLive(liveApproval("deny")), status: "running", activity: "turn 2: thinking" },
