@@ -178,7 +178,9 @@ const subAgent = (
   const endedAt = timestamp(data, "completed_at");
   const sequence = optionalNumber(data.sequence, "data.sequence");
   // Only an ending carries the child's reply as the summary; a question is the activity while it waits.
-  const text = rowSummary === undefined ? {} : terminalStatuses.has(status) ? { summary: rowSummary } : status === "waiting_input" ? { latestActivity: rowSummary } : {};
+  let text = {};
+  if (rowSummary !== undefined && terminalStatuses.has(status)) text = { summary: rowSummary };
+  else if (rowSummary !== undefined && status === "waiting_input") text = { latestActivity: rowSummary };
   return {
     type: "sub_agent",
     childRunId: string(data[childKey], `data.${childKey}`),

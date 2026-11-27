@@ -183,6 +183,25 @@ const waits: Record<string, { events: () => RunEvent[]; status: string; activity
     status: "done",
   },
 };
+// A question and an approval can be open at once (a child's question does not block it): the question's "needs input"
+// outlasts the approval, and the approval's wait shows once the question is answered.
+const delivered = { event: "child_message_delivered", session_id: "p", data: { agent_instance_id: "p:1", child_label: "p:1", preview: "use src" } };
+const idle = { event: "sub_agent_receipt", session_id: "p", data: { kind: "child_idle", notification_id: "n4", child_instance_id: "p:1", description: "count lines", status: "child_idle", text: "count lines is idle" } };
+Object.assign(waits, {
+  "live: question, approval requested": { events: () => fromLive([live.started(), liveQuestion(false), approval.request()]), status: "needs input", activity: "which dir?" },
+  "live: question, approval requested and ended": { events: () => fromLive([live.started(), liveQuestion(false), approval.request(), approval.end("allow")]), status: "needs input", activity: "which dir?" },
+  "live: question, approval requested, question answered": { events: () => fromLive([live.started(), liveQuestion(false), approval.request(), delivered]), status: "needs approval", activity: "which dir?" },
+  "live: question, approval requested, question answered, approval ended": {
+    events: () => fromLive([live.started(), liveQuestion(false), approval.request(), delivered, approval.end("allow")]), status: "running", activity: "which dir?",
+  },
+  "live: approval requested, then a question, approval ended": { events: () => fromLive([live.started(), approval.request(), liveQuestion(false), approval.end("allow")]), status: "needs input", activity: "which dir?" },
+  "history: question, approval requested and ended": {
+    events: () => fromZetaHistory([history.started(), historyQuestion(false), approval.request(), approval.end("allow")]), status: "needs input", activity: "which dir?",
+  },
+  // Going idle clears the open approval, and a replayed end does not wake an idle child.
+  "live: approval requested, child idle, then a message": { events: () => fromLive([live.started(), approval.request(), idle, delivered]), status: "running", activity: "turn 1: thinking" },
+  "live: approval requested, child idle, approval ended": { events: () => fromLive([live.started(), approval.request(), idle, approval.end("allow")]), status: "idle", activity: "turn 1: thinking" },
+} satisfies typeof waits);
 test.each(Object.keys(waits))("a wait shows while it lasts and never becomes the summary: %s", (name) => {
   const { events, status, activity } = waits[name]!;
   const row = rowOf(events());
