@@ -170,6 +170,12 @@ export interface SubAgentEvent {
   updatedAt?: string;
   endedAt?: string;
   sequence?: number;
+  /**
+   * The event is a snapshot of the child's own run state (its harness's run row), not a message to the parent. It updates
+   * the row, but a waiting status (`waiting_approval`, `waiting_input`) and its urgency stay until a non-snapshot event or
+   * the run's end, because a child can keep working while its question waits.
+   */
+  snapshot?: boolean;
 }
 export type RunItem =
   | {

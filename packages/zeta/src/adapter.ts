@@ -258,6 +258,41 @@ const childNotification = (name: string, data: Record<string, unknown>): RunEven
   }
 };
 
+// zeta's child-run row states (src/zeta/core/child_runs.py). A state this adapter does not know yet reads as live, or done once ended.
+const childRunStatuses: Record<string, [SubAgentStatus, SubAgentUrgency?]> = {
+  running: ["running"], finishing: ["running"], idle: ["idle"], completed: ["done"], failed: ["error", "error"], canceled: ["canceled"],
+};
+const label = (value: unknown, name: string) => value === "" || value === null ? undefined : optionalString(value, name);
+
+/**
+ * `child_started`, `child_progress`, and `child_ended` (feature `child_run_events`) carry the child's whole run row, live
+ * and as history rows. They are snapshots: they update the row but leave a pending question or approval to its own events.
+ */
+const childRunEvent = (name: string, wire: Record<string, unknown>): SubAgentEvent => {
+  const child = object(wire.child, "child");
+  const state = string(child.status, "child.status");
+  const [status, urgency] = Object.hasOwn(childRunStatuses, state) ? childRunStatuses[state]! : [name === "child_ended" ? "done" as const : "running" as const];
+  const agentType = label(child.agent_type, "child.agent_type");
+  const task = label(child.description, "child.description");
+  const step = label(child.current_step, "child.current_step");
+  const toolCount = optionalNumber(child.tool_count, "child.tool_count");
+  const startedAt = label(child.started_at, "child.started_at");
+  const endedAt = label(child.finished_at, "child.finished_at");
+  return {
+    type: "sub_agent",
+    childRunId: string(wire.run_id, "run_id"),
+    status,
+    snapshot: true,
+    ...(urgency ? { urgency } : {}),
+    ...(agentType ? { name: agentType } : {}),
+    ...(task ? { task } : {}),
+    ...(step ? { latestActivity: step } : {}),
+    ...(toolCount === undefined ? {} : { toolCount }),
+    ...(startedAt ? { startedAt } : {}),
+    ...(endedAt ? { endedAt } : {}),
+  };
+};
+
 const viewOf = (call: ToolCall) => {
   const view = resolveToolView(zetaTools, call);
   return view ? { view } : {};
@@ -369,6 +404,9 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
         const childRunId = optionalString(data.agent_instance_id, "data.agent_instance_id");
         return childRunId ? [event, subAgent({ ...data, child_instance_id: childRunId, summary: event.error.message }, "error", "error")] : [event];
       }
+      case "child_started":
+      case "child_progress":
+      case "child_ended": return [childRunEvent(name, wire)];
       case "turn_aborted": return [{ type: "error", error: { code: "aborted", message: optionalString(wire.message, "message") ?? "turn aborted" } }];
       case "child_message_delivered": {
         const childRunId = optionalString(data.agent_instance_id, "data.agent_instance_id");
@@ -437,6 +475,8 @@ const historyRow = (value: unknown, calls: Map<string, ToolCall>, resent: Set<un
   if (row.event === "served_turn_end") return []; // a turn-end fact for `servedTurnOutcome`, not a transcript row
   if (row.event === "history_group_truncated") return [{ type: "history_truncated", text: "[history group too large; truncated]" }];
   if (Array.isArray(row.content) && text(row.content) === "[history group too large; truncated]") return [{ type: "history_truncated", text: "[history group too large; truncated]" }];
+  // Lifecycle rows (child runs) are event-shaped like their live events and have no content.
+  if (row.event === "child_started" || row.event === "child_progress" || row.event === "child_ended") return fromZetaEvent(row);
   if (row.event === "approval_request" || row.event === "approval_end") {
     // Older servers (no `session_history_fidelity`) empty tool_use arguments, but an approval row keeps them; with the
     // feature, the tool_use block itself is the record and wins.

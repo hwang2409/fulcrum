@@ -403,3 +403,57 @@ test("a bash call with no arguments in history keeps the generic card until zeta
   ]);
   expect(events.at(-1)).not.toHaveProperty("view");
 });
+
+// zeta 352442dc `child_run_events`: lifecycle rows carry the z5 child-run row (src/zeta/core/child_runs.py
+// project_child_run_row). History rows come from server/handlers/child_run_lifecycle.py history_rows (id, role, no
+// content); the progress snapshot row comes from server/session_replay/children.py with_baseline (no id or role).
+const childRow = (status: string, extra: Record<string, unknown> = {}) => ({
+  run_id: "parent:1", session_id: "parent", parent_run_id: null, description: "list files", agent_type: "worker",
+  status, accepts_follow_ups: true, turns_used: 1, tool_count: 0, current_step: "starting",
+  started_at: "2026-11-20T10:00:00+00:00", finished_at: null, elapsed_seconds: 0, ...extra,
+});
+const childItems = (events: ReturnType<typeof fromZetaEvent>) => {
+  const store = createRunStore((flush) => flush());
+  for (const event of events) store.dispatch(event);
+  return store.getOutline().map(({ id }) => store.getItem(id));
+};
+
+test("child-run lifecycle history rows map to one sub-agent row, and a malformed row stays one error", () => {
+  const events = fromZetaHistory([
+    { id: "e1", role: "system", event: "child_started", session_id: "parent", run_id: "parent:1", sequence: 1, child: childRow("running") },
+    { event: "child_progress", session_id: "parent", run_id: "parent:1", sequence: 1, revision: 3, child: childRow("running", { tool_count: 2, current_step: "$ ls", account_status: "ok" }) },
+    { id: "e2", role: "system", event: "child_started", session_id: "parent", run_id: "parent:2", sequence: 2 },
+    { id: "e3:child_ended", role: "system", event: "child_ended", session_id: "parent", run_id: "parent:1", sequence: 3, child: childRow("completed", { tool_count: 2, current_step: "done", finished_at: "2026-11-20T10:01:00+00:00" }) },
+  ]);
+  const items = childItems(events);
+  expect(items.filter((item) => item?.type === "sub_agent")).toEqual([
+    expect.objectContaining({ type: "sub_agent", childRunId: "parent:1", status: "done", name: "worker", task: "list files", toolCount: 2, latestActivity: "done", endedAt: "2026-11-20T10:01:00+00:00" }),
+  ]);
+  const errors = events.filter((event) => event.type === "error");
+  expect(errors).toEqual([{ type: "error", error: { code: "adapter_invalid_payload", message: "child must be an object" } }]);
+});
+
+test("live child-run lifecycle events update one clickable sub-agent row", () => {
+  const live = (event: string, child: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    fromZetaEvent({ event, session_id: "parent", run_id: "parent:1", sequence: 1, child, stream_id: "s", seq: 4, ...extra });
+  const started = live("child_started", childRow("running"));
+  expect(started).toEqual([expect.objectContaining({ type: "sub_agent", childRunId: "parent:1", status: "running", name: "worker", task: "list files" })]);
+  const events = [
+    ...started,
+    ...live("child_progress", childRow("finishing", { tool_count: 5, current_step: "$ bun test" }), { revision: 2 }),
+    ...live("child_ended", childRow("failed", { tool_count: 5, finished_at: "2026-11-20T10:02:00+00:00" }), { sequence: 9 }),
+  ];
+  expect(childItems(events)).toEqual([
+    expect.objectContaining({ type: "sub_agent", childRunId: "parent:1", status: "error", urgency: "error", toolCount: 5 }),
+  ]);
+});
+
+test("a child-run snapshot keeps a pending question until the parent answers", () => {
+  const question = fromZetaEvent({ event: "child_question", data: { child_instance_id: "parent:1", question_id: "q", question: "continue?", notification_id: "n-q" } });
+  const progress = fromZetaEvent({ event: "child_progress", run_id: "parent:1", sequence: 1, revision: 2, child: childRow("running", { tool_count: 1, current_step: "$ ls" }) });
+  expect(childItems([...question, ...progress])).toEqual([
+    expect.objectContaining({ status: "waiting_input", urgency: "input", toolCount: 1, latestActivity: "$ ls" }),
+  ]);
+  const answered = fromZetaEvent({ event: "child_message_delivered", data: { agent_instance_id: "parent:1", preview: "yes" } });
+  expect(childItems([...question, ...progress, ...answered])).toEqual([expect.objectContaining({ status: "running", urgency: undefined })]);
+});
