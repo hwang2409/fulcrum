@@ -53,6 +53,7 @@ const toolItemId = (id: string) => `tool:${id}`;
 const approvalItemId = (id: string) => `approval:${id}`;
 
 const terminalSubAgentStatuses = new Set(["done", "error", "canceled"]);
+const waitingSubAgentStatuses = new Set(["waiting_approval", "waiting_input"]);
 const subAgentTime = (event: SubAgentEvent) => {
   const value = event.endedAt ?? event.updatedAt ?? event.startedAt;
   if (!value) return undefined;
@@ -155,6 +156,7 @@ export const eventSchemas = {
     updatedAt: optional(string),
     endedAt: optional(string),
     sequence: optional(finite),
+    snapshot: optional(boolean),
   },
 } satisfies { readonly [T in RunEvent["type"]]: EventSchema<Extract<RunEvent, { type: T }>> };
 
@@ -666,9 +668,12 @@ export function reduceAllWithEntities(
           const priorTerminal = terminalSubAgentStatuses.has(prior.status);
           if (order === -1 || (priorTerminal && (order === undefined || !terminalSubAgentStatuses.has(event.status)))) break;
           const toolCount = prior.toolCount === undefined || event.toolCount === undefined ? event.toolCount ?? prior.toolCount : Math.max(prior.toolCount, event.toolCount);
-          setItem({ ...prior, ...event, id, urgency: event.urgency, toolCount });
+          const { snapshot, ...update } = event;
+          const waiting = snapshot && waitingSubAgentStatuses.has(prior.status) && !terminalSubAgentStatuses.has(event.status);
+          setItem({ ...prior, ...update, id, toolCount, ...(waiting ? { status: prior.status, urgency: prior.urgency } : { urgency: event.urgency }) });
         } else {
-          appendItem({ ...event, id });
+          const { snapshot: _snapshot, ...item } = event;
+          appendItem({ ...item, id });
         }
         break;
       }
