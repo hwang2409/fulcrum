@@ -427,7 +427,7 @@ test("child-run lifecycle history rows map to one sub-agent row, and a malformed
   ]);
   const items = childItems(events);
   expect(items.filter((item) => item?.type === "sub_agent")).toEqual([
-    expect.objectContaining({ type: "sub_agent", childRunId: "parent:1", status: "done", name: "worker", task: "list files", toolCount: 2, latestActivity: "done", endedAt: "2026-11-20T10:01:00+00:00" }),
+    expect.objectContaining({ type: "sub_agent", childRunId: "parent:1", status: "done", name: "worker", task: "list files", toolCount: 2, endedAt: "2026-11-20T10:01:00+00:00" }),
   ]);
   const errors = events.filter((event) => event.type === "error");
   expect(errors).toEqual([{ type: "error", error: { code: "adapter_invalid_payload", message: "child must be an object" } }]);

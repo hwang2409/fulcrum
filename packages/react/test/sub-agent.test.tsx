@@ -79,7 +79,7 @@ beforeEach(() => history.replaceState(null, "", "/gallery.html"));
 
 test("the default timeline renders a sub-agent row with its facts, and with no navigator it has no drill-in", () => {
   const { store } = storeOf([
-    child("a", { name: "reviewer", task: "audit auth", status: "done", toolCount: 7, latestActivity: "$ bun test", startedAt: "2026-01-01T00:00:00Z", endedAt: "2026-01-01T00:02:14Z" }),
+    child("a", { name: "reviewer", task: "audit auth", status: "done", toolCount: 7, summary: "3 findings", startedAt: "2026-01-01T00:00:00Z", endedAt: "2026-01-01T00:02:14Z" }),
   ]);
   mount(<RunProvider store={store}><Timeline /></RunProvider>);
   const row = q('[data-part="sub-agent"]');
@@ -91,7 +91,7 @@ test("the default timeline renders a sub-agent row with its facts, and with no n
   expect(q('[data-part="sub-agent-task"]').textContent).toBe("audit auth");
   expect(q('[data-part="sub-agent-status"]').textContent).toBe("done");
   expect(q('[data-part="sub-agent-meta"]').textContent).toBe("2m 14s · 7 tools");
-  expect(q('[data-part="sub-agent-activity"]').textContent).toBe("$ bun test");
+  expect(q('[data-part="sub-agent-activity"]').textContent).toBe("3 findings");
 });
 
 test("subAgentRow derives the badge, text, accessible name, and drill-in from the item alone", () => {
