@@ -75,6 +75,9 @@ type SubAgentItem = Extract<RunItem, { type: "sub_agent" }>;
  * - An older event (by `sequence`, else by time) is dropped.
  * - A terminal row stays terminal: a non-terminal event reopens it only when it is newer by a known order. A later
  *   terminal event fills in its facts (a receipt's summary, an end time) but keeps the row's outcome unless it is newer.
+ *   When a receipt and an end event disagree, the end event wins only when it has a known order against the row; a
+ *   receipt-only row keeps the receipt's outcome.
+ * - A known task is never replaced: a child's task is fixed for its life, so a later event cannot overwrite it.
  * - A terminal row has no latest activity: the source can leave its last step stale, and the summary is the outcome.
  */
 const mergeSubAgent = (prior: SubAgentItem | undefined, event: SubAgentEvent, id: string): SubAgentItem | undefined => {
@@ -88,7 +91,7 @@ const mergeSubAgent = (prior: SubAgentItem | undefined, event: SubAgentEvent, id
     if (order === -1 || (priorTerminal && !eventTerminal && order !== 1)) return undefined;
     const toolCount = prior.toolCount === undefined || event.toolCount === undefined ? event.toolCount ?? prior.toolCount : Math.max(prior.toolCount, event.toolCount);
     const keepStatus = priorTerminal ? order !== 1 : snapshot && waitingSubAgentStatuses.has(prior.status) && !eventTerminal;
-    row = { ...prior, ...update, id, toolCount, ...(keepStatus ? { status: prior.status, urgency: prior.urgency } : { urgency: event.urgency }) };
+    row = { ...prior, ...update, id, task: prior.task ?? update.task, toolCount, ...(keepStatus ? { status: prior.status, urgency: prior.urgency } : { urgency: event.urgency }) };
   }
   if (!terminalSubAgentStatuses.has(row.status)) return row;
   const { latestActivity: _stale, ...terminal } = row;

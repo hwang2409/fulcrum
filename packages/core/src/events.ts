@@ -159,7 +159,7 @@ export interface SubAgentEvent {
   name?: string;
   /** The delegated task, one line. */
   task?: string;
-  /** The newest progress line, for example "$ bun test". */
+  /** The newest progress line, for example "$ bun test". The store drops it when the row is terminal (done, error, canceled). */
   latestActivity?: string;
   /** Tool calls the child started so far. It never goes down. */
   toolCount?: number;

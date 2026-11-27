@@ -76,3 +76,36 @@ test("a receipt alone (a server without child_run_events) reads as the task and 
   expect(rowOf(fromLive([live.receipt("completed")]))).toMatchObject({ status: "done", task: "count lines", activity: "child reply 0" });
   expect(rowOf(fromLive([live.started(), live.progress()]))).toMatchObject({ status: "running", activity: "turn 1: thinking" });
 });
+
+// A question notice puts a fixed label in `description` and the task in `agent_description`
+// (conversation_channel.py child_question, _step_delivery.py child_question_withdrawn).
+const question = (withdrawn: boolean) => ({
+  kind: withdrawn ? "child_question_withdrawn" : "child_question", child_instance_id: "p:1", question_id: "q1",
+  description: withdrawn ? "child question withdrawn" : "child question", agent_description: "count lines",
+  status: withdrawn ? "withdrawn" : "pending",
+  ...(withdrawn ? { text: "question withdrawn: child canceled" } : { question: "which dir?", text: "child p:1 asks: which dir?" }),
+});
+const liveQuestion = (withdrawn: boolean) => ({ event: "sub_agent_receipt", session_id: "p", data: { notification_id: withdrawn ? "n3" : "n2", ...question(withdrawn) } });
+const historyQuestion = (withdrawn: boolean) => {
+  const notification = question(withdrawn);
+  return { id: withdrawn ? "n3" : "n2", role: "system", content: [{ type: "text", text: notification.text }], tool_result: null, notification };
+};
+const waiting: Record<string, () => RunEvent[]> = {
+  "live: started, question": () => fromLive([live.started(), liveQuestion(false)]),
+  "live: started, question, withdrawn": () => fromLive([live.started(), liveQuestion(false), liveQuestion(true)]),
+  // _notifications.py `append_child_question` writes no agent_description.
+  "live: started, question without agent_description": () => {
+    const { agent_description: _task, ...data } = liveQuestion(false).data;
+    return fromLive([live.started(), { event: "sub_agent_receipt", session_id: "p", data }]);
+  },
+  "live: question alone": () => fromLive([liveQuestion(false)]),
+  "live: withdrawn alone": () => fromLive([liveQuestion(true)]),
+  "history: started, question": () => fromZetaHistory([history.started(), historyQuestion(false)]),
+  "history: started, question, withdrawn": () => fromZetaHistory([history.started(), historyQuestion(false), historyQuestion(true)]),
+  "history: question alone": () => fromZetaHistory([historyQuestion(false)]),
+  "history: withdrawn alone": () => fromZetaHistory([historyQuestion(true)]),
+};
+test.each(Object.keys(waiting))("a child's question keeps its task, not the notice label: %s", (name) => {
+  const withdrawn = name.includes("withdrawn");
+  expect(rowOf(waiting[name]!())).toMatchObject({ status: withdrawn ? "running" : "needs input", task: "count lines" });
+});

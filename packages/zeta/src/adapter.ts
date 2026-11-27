@@ -155,7 +155,7 @@ const timestamp = (data: Record<string, unknown>, key: string) =>
   optionalString(data[key], `data.${key}`);
 // zeta's receipt stats suffix (src/zeta/agent/receipt.py `_SUFFIX_RE`): the row shows elapsed time and tools itself.
 const receiptSuffix = / · \d+ turns · \d+\.\d+s · \d+ tool calls · error=(?:true|false) · canceled=(?:true|false)$/;
-// `description` is the child's task; the summary is what the child said (a report summary, a question, its reply).
+// The summary is what the child said (a report summary, a question, its reply).
 const summary = (data: Record<string, unknown>) =>
   optionalString(data.summary, "data.summary") ??
   optionalString(data.question, "data.question") ??
@@ -169,7 +169,8 @@ const subAgent = (
   childKey = "child_instance_id",
 ): SubAgentEvent => {
   const rowSummary = summary(data);
-  const task = optionalString(data.description, "data.description");
+  // The child's task: `agent_description` on a question notice, else `description`.
+  const task = optionalString(data.agent_description, "data.agent_description") ?? optionalString(data.description, "data.description");
   const notificationId = optionalString(data.notification_id, "data.notification_id");
   const startedAt = timestamp(data, "started_at");
   const updatedAt = timestamp(data, "updated_at");
@@ -256,8 +257,9 @@ const childNotification = (name: string, data: Record<string, unknown>): RunEven
       return subAgent(data, status, urgency);
     }
     case "child_idle": return subAgent(data, "idle");
-    case "child_question": return subAgent(data, "waiting_input", "input");
-    case "child_question_withdrawn": return subAgent(data, "running");
+    // zeta writes a fixed label ("child question", "child question withdrawn") in a question notice's `description`.
+    case "child_question": return subAgent({ ...data, description: undefined }, "waiting_input", "input");
+    case "child_question_withdrawn": return subAgent({ ...data, description: undefined }, "running");
     default: return undefined;
   }
 };
