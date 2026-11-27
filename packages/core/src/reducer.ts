@@ -68,6 +68,33 @@ const compareSubAgentOrder = (prior: SubAgentEvent, event: SubAgentEvent) => {
   return before === undefined || after === undefined ? undefined : Math.sign(after - before);
 };
 
+type SubAgentItem = Extract<RunItem, { type: "sub_agent" }>;
+/**
+ * The one owner of a sub-agent row: every event for a child (live, a completion receipt, a history row) merges here,
+ * in any order. Returns the new row, or undefined when the event changes nothing (it is older than the row).
+ * - An older event (by `sequence`, else by time) is dropped.
+ * - A terminal row stays terminal: a non-terminal event reopens it only when it is newer by a known order. A later
+ *   terminal event fills in its facts (a receipt's summary, an end time) but keeps the row's outcome unless it is newer.
+ * - A terminal row has no latest activity: the source can leave its last step stale, and the summary is the outcome.
+ */
+const mergeSubAgent = (prior: SubAgentItem | undefined, event: SubAgentEvent, id: string): SubAgentItem | undefined => {
+  const { snapshot, ...update } = event;
+  let row: SubAgentItem;
+  if (!prior) row = { ...update, id };
+  else {
+    const order = compareSubAgentOrder(prior, event);
+    const priorTerminal = terminalSubAgentStatuses.has(prior.status);
+    const eventTerminal = terminalSubAgentStatuses.has(event.status);
+    if (order === -1 || (priorTerminal && !eventTerminal && order !== 1)) return undefined;
+    const toolCount = prior.toolCount === undefined || event.toolCount === undefined ? event.toolCount ?? prior.toolCount : Math.max(prior.toolCount, event.toolCount);
+    const keepStatus = priorTerminal ? order !== 1 : snapshot && waitingSubAgentStatuses.has(prior.status) && !eventTerminal;
+    row = { ...prior, ...update, id, toolCount, ...(keepStatus ? { status: prior.status, urgency: prior.urgency } : { urgency: event.urgency }) };
+  }
+  if (!terminalSubAgentStatuses.has(row.status)) return row;
+  const { latestActivity: _stale, ...terminal } = row;
+  return terminal;
+};
+
 interface EntityDraft {
   get(id: string): RunItem | undefined;
   set(item: RunItem): void;
@@ -663,18 +690,9 @@ export function reduceAllWithEntities(
       case "sub_agent": {
         const id = `sub-agent:${event.childRunId}`;
         const prior = getItem(id);
-        if (prior?.type === "sub_agent") {
-          const order = compareSubAgentOrder(prior, event);
-          const priorTerminal = terminalSubAgentStatuses.has(prior.status);
-          if (order === -1 || (priorTerminal && (order === undefined || !terminalSubAgentStatuses.has(event.status)))) break;
-          const toolCount = prior.toolCount === undefined || event.toolCount === undefined ? event.toolCount ?? prior.toolCount : Math.max(prior.toolCount, event.toolCount);
-          const { snapshot, ...update } = event;
-          const waiting = snapshot && waitingSubAgentStatuses.has(prior.status) && !terminalSubAgentStatuses.has(event.status);
-          setItem({ ...prior, ...update, id, toolCount, ...(waiting ? { status: prior.status, urgency: prior.urgency } : { urgency: event.urgency }) });
-        } else {
-          const { snapshot: _snapshot, ...item } = event;
-          appendItem({ ...item, id });
-        }
+        const row = mergeSubAgent(prior?.type === "sub_agent" ? prior : undefined, event, id);
+        if (row && prior) setItem(row);
+        else if (row) appendItem(row);
         break;
       }
       case "unknown": {

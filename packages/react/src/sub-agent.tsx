@@ -137,8 +137,8 @@ export function subAgentRow(item: SubAgentItem, navigation: SubAgentNavigation |
   const elapsed = started === undefined || until === undefined ? undefined : elapsedText(until - started);
   const tools = item.toolCount === undefined ? undefined : `${item.toolCount} ${item.toolCount === 1 ? "tool" : "tools"}`;
   const meta = [elapsed, tools].filter(Boolean).join(" · ") || undefined;
-  // A finished run shows its outcome: the source can leave its last step stale at the end.
-  const latest = terminal.has(item.status) ? item.summary ?? item.latestActivity : item.latestActivity;
+  // A finished run shows its outcome (the store drops a terminal row's last step); a live one, its newest step.
+  const latest = terminal.has(item.status) ? item.summary : item.latestActivity;
   const activity = latest ? line(latest) : undefined;
   const why = reason ? line(reason) : undefined;
   return {

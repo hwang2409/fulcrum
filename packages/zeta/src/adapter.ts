@@ -153,11 +153,13 @@ const invalid = (error: unknown): RunEvent[] => [{
 
 const timestamp = (data: Record<string, unknown>, key: string) =>
   optionalString(data[key], `data.${key}`);
+// zeta's receipt stats suffix (src/zeta/agent/receipt.py `_SUFFIX_RE`): the row shows elapsed time and tools itself.
+const receiptSuffix = / · \d+ turns · \d+\.\d+s · \d+ tool calls · error=(?:true|false) · canceled=(?:true|false)$/;
+// `description` is the child's task; the summary is what the child said (a report summary, a question, its reply).
 const summary = (data: Record<string, unknown>) =>
   optionalString(data.summary, "data.summary") ??
   optionalString(data.question, "data.question") ??
-  optionalString(data.description, "data.description") ??
-  optionalString(data.text, "data.text") ??
+  optionalString(data.text, "data.text")?.replace(receiptSuffix, "") ??
   optionalString(data.preview, "data.preview");
 
 const subAgent = (
@@ -167,6 +169,7 @@ const subAgent = (
   childKey = "child_instance_id",
 ): SubAgentEvent => {
   const rowSummary = summary(data);
+  const task = optionalString(data.description, "data.description");
   const notificationId = optionalString(data.notification_id, "data.notification_id");
   const startedAt = timestamp(data, "started_at");
   const updatedAt = timestamp(data, "updated_at");
@@ -176,6 +179,7 @@ const subAgent = (
     type: "sub_agent",
     childRunId: string(data[childKey], `data.${childKey}`),
     status,
+    ...(task ? { task } : {}),
     ...(rowSummary === undefined ? {} : { summary: rowSummary }),
     ...(urgency ? { urgency } : {}),
     ...(notificationId ? { notificationId } : {}),
@@ -376,7 +380,7 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
           ...(wire.disabled_reason === undefined ? {} : { disabled_reason: string(wire.disabled_reason, "disabled_reason") }),
         };
         const childRunId = optionalString(wire.agent_instance_id, "agent_instance_id");
-        return childRunId ? [approval, subAgent({ ...data, child_instance_id: childRunId, description: `approval for ${approval.tool_call.name}` }, "waiting_approval", "approval")] : [approval];
+        return childRunId ? [approval, subAgent({ ...data, child_instance_id: childRunId, summary: `approval for ${approval.tool_call.name}` }, "waiting_approval", "approval")] : [approval];
       }
       case "approval_end": {
         const decision = zetaDecisions.get(data.decision);
