@@ -172,8 +172,8 @@ export interface SubAgentEvent {
   sequence?: number;
   /**
    * The event is a snapshot of the child's own run state (its harness's run row), not a message to the parent. It updates
-   * the row, but a waiting status (`waiting_approval`, `waiting_input`) and its urgency stay until a non-snapshot event or
-   * the run's end, because a child can keep working while its question waits.
+   * the row, but an open question (`waiting_input`), its urgency, and its activity line stay until a non-snapshot event, a
+   * snapshot newer by `sequence` or time, or the run's end, because a child can keep working while its question waits.
    */
   snapshot?: boolean;
 }
@@ -207,7 +207,14 @@ export type RunItem =
       type: "user" | "error" | "notification" | "unknown";
       event: RunEvent;
     }
-  | ({ id: string } & SubAgentEvent);
+  | ({
+      id: string;
+      /**
+       * Request ids of the child's approvals that have not ended (an `approval_request` with this `childRunId`). While one
+       * is open, a running child reads `waiting_approval`. Unset when none is open.
+       */
+      openApprovals?: readonly string[];
+    } & SubAgentEvent);
 /**
  * How a run ended, when the host reports it: `cancelled` is a user stop, `disconnected` a stop because the client stayed
  * gone, and `unknown` an end the host could not observe at all (a transport loss hid it).
@@ -274,6 +281,8 @@ export type RunEvent =
       delegated: boolean;
       /** Temporary adapter-supplied state while the request cannot accept a decision. */
       state?: "reconnecting" | "resolving";
+      /** The sub-agent run that asks, when a child's tool needs the approval. Its row waits until the approval ends. */
+      childRunId?: string;
       status?: string;
       disabled_reason?: string;
     }

@@ -162,6 +162,7 @@ const summary = (data: Record<string, unknown>) =>
   optionalString(data.text, "data.text")?.replace(receiptSuffix, "") ??
   optionalString(data.preview, "data.preview");
 
+const terminalStatuses = new Set<SubAgentStatus>(["done", "error", "canceled"]);
 const subAgent = (
   data: Record<string, unknown>,
   status: SubAgentStatus,
@@ -176,12 +177,16 @@ const subAgent = (
   const updatedAt = timestamp(data, "updated_at");
   const endedAt = timestamp(data, "completed_at");
   const sequence = optionalNumber(data.sequence, "data.sequence");
+  // Only an ending carries the child's reply as the summary; a question is the activity while it waits.
+  let text = {};
+  if (rowSummary !== undefined && terminalStatuses.has(status)) text = { summary: rowSummary };
+  else if (rowSummary !== undefined && status === "waiting_input") text = { latestActivity: rowSummary };
   return {
     type: "sub_agent",
     childRunId: string(data[childKey], `data.${childKey}`),
     status,
     ...(task ? { task } : {}),
-    ...(rowSummary === undefined ? {} : { summary: rowSummary }),
+    ...text,
     ...(urgency ? { urgency } : {}),
     ...(notificationId ? { notificationId } : {}),
     ...(startedAt ? { startedAt } : {}),
@@ -194,19 +199,6 @@ const subAgent = (
 const completionStatus = (data: Record<string, unknown>): [SubAgentStatus, SubAgentUrgency?] => {
   switch (string(data.status, "data.status")) {
     case "completed": return ["done"];
-    case "error": return ["error", "error"];
-    case "canceled": return ["canceled"];
-    default: throw new Error("data.status is invalid");
-  }
-};
-
-const resumedStatus = (data: Record<string, unknown>): [SubAgentStatus, SubAgentUrgency?] => {
-  if (data.status === undefined) return ["running"];
-  switch (string(data.status, "data.status")) {
-    case "running": return ["running"];
-    case "idle": return ["idle"];
-    case "completed":
-    case "done": return ["done"];
     case "error": return ["error", "error"];
     case "canceled": return ["canceled"];
     default: throw new Error("data.status is invalid");
@@ -375,22 +367,19 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
         const call = tool(wire.tool_call);
         const state = wire.state === undefined ? undefined : string(wire.state, "state");
         if (state !== undefined && state !== "reconnecting" && state !== "resolving") throw new Error("state must be reconnecting or resolving");
-        const approval: RunEvent = {
+        const childRunId = optionalString(wire.agent_instance_id, "agent_instance_id");
+        return [{
           type: "approval_request", request_id: string(wire.request_id, "request_id"), tool_call: call, ...viewOf(call), delegated: boolean(wire.delegated, "delegated"),
           ...(state ? { state } : {}),
           ...(wire.status === undefined ? {} : { status: string(wire.status, "status") }),
           ...(wire.disabled_reason === undefined ? {} : { disabled_reason: string(wire.disabled_reason, "disabled_reason") }),
-        };
-        const childRunId = optionalString(wire.agent_instance_id, "agent_instance_id");
-        return childRunId ? [approval, subAgent({ ...data, child_instance_id: childRunId, summary: `approval for ${approval.tool_call.name}` }, "waiting_approval", "approval")] : [approval];
+          ...(childRunId ? { childRunId } : {}),
+        }];
       }
       case "approval_end": {
         const decision = zetaDecisions.get(data.decision);
-        const approval: RunEvent = { type: "approval_end", request_id: string(wire.request_id, "request_id"), ...(decision ? { decision } : {}), data };
-        const childRunId = optionalString(data.agent_instance_id, "data.agent_instance_id");
-        if (!childRunId) return [approval];
-        const [status, urgency] = resumedStatus(data);
-        return [approval, subAgent({ ...data, child_instance_id: childRunId }, status, urgency)];
+        // zeta names the child only on the request (src/zeta/server/approval_lifecycle.py:382-419): the store pairs them.
+        return [{ type: "approval_end", request_id: string(wire.request_id, "request_id"), ...(decision ? { decision } : {}), data }];
       }
       case "usage": {
         // zeta keeps the provider's usage details (a service tier, nested cache counts) beside the token counts: the counts

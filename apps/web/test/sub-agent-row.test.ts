@@ -109,3 +109,101 @@ test.each(Object.keys(waiting))("a child's question keeps its task, not the noti
   const withdrawn = name.includes("withdrawn");
   expect(rowOf(waiting[name]!())).toMatchObject({ status: withdrawn ? "running" : "needs input", task: "count lines" });
 });
+
+// A child's tool approval: the request carries the child's id, and the end names only the request
+// (approval_lifecycle.py:382-419); its step names the wait while it is blocked (runner.py:191). History puts the child's newest snapshot right
+// after child_started, before its approval rows (session_replay/children.py `with_baseline`).
+const read = { id: "c1", name: "read", arguments: { path: "notes.txt" } };
+const step = (text: string) => child("running", { current_step: text });
+const read2 = { id: "c2", name: "read", arguments: { path: "todo.txt" } };
+const approval = {
+  request: (id = "r1", call = read) => ({ event: "approval_request", session_id: "p", request_id: id, tool_call: call, delegated: true, agent_instance_id: "p:1" }),
+  end: (decision: string, id = "r1", call = read) => ({ event: "approval_end", session_id: "p", request_id: id, tool_call: call, data: { decision } }),
+};
+const liveStep = (text: string, revision: number) => ({ ...live.progress(), revision, child: step(text) });
+const historyStep = (text: string) => ({ ...history.progress(), child: step(text) });
+const liveApproval = (decision: string) => [
+  live.started(), liveStep("turn 1: approval pending: read", 2), approval.request(), approval.end(decision),
+  liveStep(decision === "allow" ? "turn 1: tool: read {}" : "turn 2: thinking", 3),
+];
+// A parallel batch gates each call on its own approval (zeta core/tool_dispatch.py:284-310): the child waits until the
+// last open request ends, whatever its step says meanwhile.
+const pending = "turn 1: approval pending: read";
+const liveTwoApprovals = [
+  live.started(), liveStep(pending, 2), approval.request(), liveStep(pending, 3), approval.request("r2", read2),
+  approval.end("allow"), liveStep("turn 1: tool: read {}", 4),
+];
+const liveBothAllowed = [...liveTwoApprovals, approval.end("allow", "r2", read2), liveStep("turn 1: tool: read {}", 5)];
+const historyTwoApprovals = [history.started(), historyStep("turn 1: tool: read {}"), approval.request(), approval.request("r2", read2), approval.end("allow")];
+const waits: Record<string, { events: () => RunEvent[]; status: string; activity?: string }> = {
+  "live: two approvals pending, one allowed": { events: () => fromLive(liveTwoApprovals), status: "needs approval", activity: "turn 1: tool: read {}" },
+  "live: two approvals pending, both allowed": { events: () => fromLive(liveBothAllowed), status: "running", activity: "turn 1: tool: read {}" },
+  "live: two approvals allowed, child ended": { events: () => fromLive([...liveBothAllowed, live.ended("completed")]), status: "done" },
+  "live: approval pending, an auto-allowed sibling tool starts": {
+    events: () => fromLive([live.started(), liveStep(pending, 2), approval.request(), liveStep("turn 1: tool: grep {}", 3)]),
+    status: "needs approval", activity: "turn 1: tool: grep {}",
+  },
+  // zeta publishes the request from authorize() before the runner publishes the pending step: the likely live order.
+  "live: request, then its pending step": { events: () => fromLive([live.started(), approval.request(), liveStep(pending, 2)]), status: "needs approval", activity: pending },
+  "history: two approvals pending, one resolved": { events: () => fromZetaHistory(historyTwoApprovals), status: "needs approval", activity: "turn 1: tool: read {}" },
+  "history: two approvals pending, both resolved": {
+    events: () => fromZetaHistory([...historyTwoApprovals, approval.end("allow", "r2", read2)]), status: "running", activity: "turn 1: tool: read {}",
+  },
+  "live: approval pending": { events: () => fromLive(liveApproval("allow").slice(0, 3)), status: "needs approval", activity: "turn 1: approval pending: read" },
+  "live: approval allowed, then the child works": { events: () => fromLive(liveApproval("allow")), status: "running", activity: "turn 1: tool: read {}" },
+  "live: approval denied, then the child works": { events: () => fromLive(liveApproval("deny")), status: "running", activity: "turn 2: thinking" },
+  "live: approval allowed, child ended before its receipt": { events: () => fromLive([...liveApproval("allow"), live.ended("completed")]), status: "done" },
+  "live: approval allowed, child ended, receipt": { events: () => fromLive([...liveApproval("allow"), live.ended("completed"), live.receipt("completed")]), status: "done", activity: "child reply 0" },
+  "history: approval resolved, child still running": {
+    events: () => fromZetaHistory([history.started(), historyStep("turn 2: thinking"), approval.request(), approval.end("allow")]),
+    status: "running", activity: "turn 2: thinking",
+  },
+  "history: approval still pending": {
+    events: () => fromZetaHistory([history.started(), historyStep("turn 1: approval pending: read"), approval.request()]),
+    status: "needs approval", activity: "turn 1: approval pending: read",
+  },
+  "history: approval resolved, child ended, receipt": {
+    events: () => fromZetaHistory([history.started(), historyStep("turn 2: thinking"), approval.request(), approval.end("allow"), history.ended("completed"), history.receipt("completed")]),
+    status: "done", activity: "child reply 0",
+  },
+  "history: approval resolved, child ended before its receipt": {
+    events: () => fromZetaHistory([history.started(), historyStep("turn 2: thinking"), approval.request(), approval.end("allow"), history.ended("completed")]),
+    status: "done",
+  },
+  // The child keeps working while its question waits: its snapshots do not end the wait.
+  "live: question, then the child works": { events: () => fromLive([live.started(), liveQuestion(false), liveStep("turn 2: thinking", 3)]), status: "needs input", activity: "which dir?" },
+  "live: question answered": {
+    events: () => fromLive([live.started(), liveQuestion(false), { event: "child_message_delivered", session_id: "p", data: { agent_instance_id: "p:1", child_label: "p:1", preview: "use src" } }, liveStep("turn 2: thinking", 3)]),
+    status: "running", activity: "turn 2: thinking",
+  },
+  "live: question withdrawn": { events: () => fromLive([live.started(), liveQuestion(false), liveQuestion(true), liveStep("turn 2: thinking", 3)]), status: "running", activity: "turn 2: thinking" },
+  "live: question, child ended before its receipt": { events: () => fromLive([live.started(), liveQuestion(false), live.ended("completed")]), status: "done" },
+  "live: answered, child ended before its receipt": {
+    events: () => fromLive([live.started(), liveQuestion(false), { event: "child_message_delivered", session_id: "p", data: { agent_instance_id: "p:1", child_label: "p:1", preview: "use src" } }, live.ended("completed")]),
+    status: "done",
+  },
+};
+// A question and an approval can be open at once (a child's question does not block it): the question's "needs input"
+// outlasts the approval, and the approval's wait shows once the question is answered.
+const delivered = { event: "child_message_delivered", session_id: "p", data: { agent_instance_id: "p:1", child_label: "p:1", preview: "use src" } };
+const idle = { event: "sub_agent_receipt", session_id: "p", data: { kind: "child_idle", notification_id: "n4", child_instance_id: "p:1", description: "count lines", status: "child_idle", text: "count lines is idle" } };
+Object.assign(waits, {
+  "live: question, approval requested": { events: () => fromLive([live.started(), liveQuestion(false), approval.request()]), status: "needs input", activity: "which dir?" },
+  "live: question, approval requested and ended": { events: () => fromLive([live.started(), liveQuestion(false), approval.request(), approval.end("allow")]), status: "needs input", activity: "which dir?" },
+  "live: question, approval requested, question answered": { events: () => fromLive([live.started(), liveQuestion(false), approval.request(), delivered]), status: "needs approval", activity: "which dir?" },
+  "live: question, approval requested, question answered, approval ended": {
+    events: () => fromLive([live.started(), liveQuestion(false), approval.request(), delivered, approval.end("allow")]), status: "running", activity: "which dir?",
+  },
+  "live: approval requested, then a question, approval ended": { events: () => fromLive([live.started(), approval.request(), liveQuestion(false), approval.end("allow")]), status: "needs input", activity: "which dir?" },
+  "history: question, approval requested and ended": {
+    events: () => fromZetaHistory([history.started(), historyQuestion(false), approval.request(), approval.end("allow")]), status: "needs input", activity: "which dir?",
+  },
+  // Going idle clears the open approval, and a replayed end does not wake an idle child.
+  "live: approval requested, child idle, then a message": { events: () => fromLive([live.started(), approval.request(), idle, delivered]), status: "running", activity: "turn 1: thinking" },
+  "live: approval requested, child idle, approval ended": { events: () => fromLive([live.started(), approval.request(), idle, approval.end("allow")]), status: "idle", activity: "turn 1: thinking" },
+} satisfies typeof waits);
+test.each(Object.keys(waits))("a wait shows while it lasts and never becomes the summary: %s", (name) => {
+  const { events, status, activity } = waits[name]!;
+  const row = rowOf(events());
+  expect({ status: row.status, activity: row.activity }).toEqual({ status, activity });
+});

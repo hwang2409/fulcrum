@@ -53,7 +53,6 @@ const toolItemId = (id: string) => `tool:${id}`;
 const approvalItemId = (id: string) => `approval:${id}`;
 
 const terminalSubAgentStatuses = new Set(["done", "error", "canceled"]);
-const waitingSubAgentStatuses = new Set(["waiting_approval", "waiting_input"]);
 const subAgentTime = (event: SubAgentEvent) => {
   const value = event.endedAt ?? event.updatedAt ?? event.startedAt;
   if (!value) return undefined;
@@ -69,6 +68,21 @@ const compareSubAgentOrder = (prior: SubAgentEvent, event: SubAgentEvent) => {
 };
 
 type SubAgentItem = Extract<RunItem, { type: "sub_agent" }>;
+type ApprovalChange = { requestId: string; open: boolean };
+// An approval's end resumes only a row that waits on approvals: a replayed end must not wake an idle or ended child,
+// and it says nothing about a question the child asked meanwhile.
+const approvalEndEvent = (prior: SubAgentItem | undefined, event: SubAgentEvent, approval?: ApprovalChange): SubAgentEvent =>
+  approval && !approval.open && prior && prior.status !== "waiting_approval" ? { ...event, status: prior.status } : event;
+// Records the child's open approval requests on the row. While one is open, a running row waits on approval; an idle
+// or terminal row has none.
+const withOpenApprovals = (row: SubAgentItem, prior: SubAgentItem | undefined, approval?: ApprovalChange): SubAgentItem => {
+  let open = prior?.openApprovals ?? [];
+  if (approval) open = approval.open ? open.includes(approval.requestId) ? open : [...open, approval.requestId] : open.filter((requestId) => requestId !== approval.requestId);
+  if (row.status === "idle" || terminalSubAgentStatuses.has(row.status)) open = [];
+  if (open.length) return { ...row, openApprovals: open, ...(row.status === "running" ? { status: "waiting_approval", urgency: "approval" } : {}) };
+  const { openApprovals: _ended, ...rest } = row;
+  return rest;
+};
 /**
  * The one owner of a sub-agent row: every event for a child (live, a completion receipt, a history row) merges here,
  * in any order. Returns the new row, or undefined when the event changes nothing (it is older than the row).
@@ -77,11 +91,17 @@ type SubAgentItem = Extract<RunItem, { type: "sub_agent" }>;
  *   terminal event fills in its facts (a receipt's summary, an end time) but keeps the row's outcome unless it is newer.
  *   When a receipt and an end event disagree, the end event wins only when it has a known order against the row; a
  *   receipt-only row keeps the receipt's outcome.
+ * - An open question (`waiting_input`) and its label stay against a snapshot that is not newer by a known order: a child
+ *   keeps working while its question waits. Its answer, its withdrawal, or the run's end clears it.
+ * - `approval` opens or ends one of the child's approval requests. While one is open, a running row reads
+ *   `waiting_approval`: a child can wait on several approvals at once, and a sibling tool can start while one waits. An
+ *   idle or terminal row has no open approval. An approval's end sets `running` only on a row that reads `waiting_approval`.
+ *   An open question outlasts an approval: the row reads `waiting_input` until it is answered, then `waiting_approval`.
  * - A known task is never replaced: a child's task is fixed for its life, so a later event cannot overwrite it.
  * - A terminal row has no latest activity: the source can leave its last step stale, and the summary is the outcome.
  */
-const mergeSubAgent = (prior: SubAgentItem | undefined, event: SubAgentEvent, id: string): SubAgentItem | undefined => {
-  const { snapshot, ...update } = event;
+const mergeSubAgent = (prior: SubAgentItem | undefined, event: SubAgentEvent, id: string, approval?: ApprovalChange): SubAgentItem | undefined => {
+  const { snapshot, ...update } = approvalEndEvent(prior, event, approval);
   let row: SubAgentItem;
   if (!prior) row = { ...update, id };
   else {
@@ -90,9 +110,11 @@ const mergeSubAgent = (prior: SubAgentItem | undefined, event: SubAgentEvent, id
     const eventTerminal = terminalSubAgentStatuses.has(event.status);
     if (order === -1 || (priorTerminal && !eventTerminal && order !== 1)) return undefined;
     const toolCount = prior.toolCount === undefined || event.toolCount === undefined ? event.toolCount ?? prior.toolCount : Math.max(prior.toolCount, event.toolCount);
-    const keepStatus = priorTerminal ? order !== 1 : snapshot && waitingSubAgentStatuses.has(prior.status) && !eventTerminal;
+    const keepStatus = priorTerminal ? order !== 1 : snapshot && prior.status === "waiting_input" && !eventTerminal && order !== 1;
     row = { ...prior, ...update, id, task: prior.task ?? update.task, toolCount, ...(keepStatus ? { status: prior.status, urgency: prior.urgency } : { urgency: event.urgency }) };
+    if (keepStatus && prior.latestActivity !== undefined) row.latestActivity = prior.latestActivity;
   }
+  row = withOpenApprovals(row, prior, approval);
   if (!terminalSubAgentStatuses.has(row.status)) return row;
   const { latestActivity: _stale, ...terminal } = row;
   return terminal;
@@ -163,7 +185,7 @@ export const eventSchemas = {
   tool_input: { tool_call: required(toolCall, toolCallFields), input: required(string), view: optional(object), data: optional(object) },
   tool_output: { tool_call: required(toolCall, toolCallFields), output: required(string), replace: optional(boolean), view: optional(object), data: optional(object) },
   tool_end: { tool_call: required(toolCall, toolCallFields), tool_result: optional(object, toolResultFields, true), resultContent: optional(oneOf("same", "append", "replace", "auto")), view: optional(object), data: optional(object) },
-  approval_request: { request_id: required(string), tool_call: required(toolCall, toolCallFields), view: optional(object), delegated: required(boolean), state: optional(oneOf("reconnecting", "resolving")), status: optional(string), disabled_reason: optional(string) },
+  approval_request: { request_id: required(string), tool_call: required(toolCall, toolCallFields), view: optional(object), delegated: required(boolean), state: optional(oneOf("reconnecting", "resolving")), status: optional(string), disabled_reason: optional(string), childRunId: optional(string) },
   approval_end: { request_id: required(string), decision: optional(oneOf("approve", "deny", "abort")), data: optional(object) },
   usage: { usage: required(usage) },
   user_message: { text: required(string), mode: required(string), attachments: optional(array), message_id: optional(string), delivery_id: optional(string), intent: optional(string), text_omitted: optional(oneOf(true)), delivery_status: optional(oneOf("delivered", "dropped")), delivery_reason: optional(string) },
@@ -433,6 +455,13 @@ export function reduceAllWithEntities(
     if (toolIndex >= 0) spliceOutline(toolIndex, 1, []);
     spliceOutline(approvalIndex, 1, [{ id: tool.id, kind: "tool" }]);
   };
+  const mergeSubAgentRow = (event: SubAgentEvent, approval?: ApprovalChange) => {
+    const id = `sub-agent:${event.childRunId}`;
+    const prior = getItem(id);
+    const row = mergeSubAgent(prior?.type === "sub_agent" ? prior : undefined, event, id, approval);
+    if (row && prior) setItem(row);
+    else if (row) appendItem(row);
+  };
   const endActiveMessage = () => {
     if (!next.activeMessageId) return;
     const item = getItem(messageItemId(next.activeMessageId));
@@ -638,6 +667,8 @@ export function reduceAllWithEntities(
         else appendItem({ id: itemId, type: "approval", request: event });
         if (next.toolApprovals[event.tool_call.id] !== itemId) next.toolApprovals = { ...next.toolApprovals, [event.tool_call.id]: itemId };
         foldApproval(event.tool_call.id);
+        // A snapshot: an open question outlasts the approval; the open id makes the row wait once the question is answered.
+        if (event.childRunId) mergeSubAgentRow({ type: "sub_agent", childRunId: event.childRunId, status: "waiting_approval", urgency: "approval", snapshot: true }, { requestId: event.request_id, open: true });
         break;
       }
       case "approval_end": {
@@ -645,7 +676,10 @@ export function reduceAllWithEntities(
         const old = getItem(itemId);
         if (old?.type !== "approval") break;
         setItem({ ...old, ended: event });
-        if (old.request.type === "approval_request") foldApproval(old.request.tool_call.id);
+        if (old.request.type !== "approval_request") break;
+        foldApproval(old.request.tool_call.id);
+        // A snapshot: the end of an approval says nothing about a question the child asked meanwhile.
+        if (old.request.childRunId) mergeSubAgentRow({ type: "sub_agent", childRunId: old.request.childRunId, status: "running", snapshot: true }, { requestId: event.request_id, open: false });
         break;
       }
       case "usage": {
@@ -690,14 +724,9 @@ export function reduceAllWithEntities(
         appendItem({ id, type: "notification", event: event.type === "notification" ? event : { type: "notification", data: event } });
         break;
       }
-      case "sub_agent": {
-        const id = `sub-agent:${event.childRunId}`;
-        const prior = getItem(id);
-        const row = mergeSubAgent(prior?.type === "sub_agent" ? prior : undefined, event, id);
-        if (row && prior) setItem(row);
-        else if (row) appendItem(row);
+      case "sub_agent":
+        mergeSubAgentRow(event);
         break;
-      }
       case "unknown": {
         const id = `unknown:${next.nextId++}`;
         appendItem({ id, type: "unknown", event });
